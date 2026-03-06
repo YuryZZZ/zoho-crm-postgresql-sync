@@ -1,0 +1,60 @@
+steps:
+  # Copy module_config.py into web_dashboard build context
+  - name: 'ubuntu'
+    entrypoint: bash
+    args:
+      - '-c'
+      - 'cp module_config.py web_dashboard/module_config.py'
+
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/zoho-crm-dashboard:latest'
+      - 'web_dashboard'
+
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/zoho-crm-dashboard:latest'
+
+  # Deploy container image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'zoho-crm-dashboard'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/zoho-crm-dashboard:latest'
+      - '--region'
+      - 'europe-west1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - 'DB_HOST=35.189.239.211,DB_NAME=zoho_crm_digital_twin,DB_USER=zoho_admin,ZOHO_REGION=eu,ZOHO_API_BASE=https://www.zohoapis.eu,ZOHO_TOKEN_URL=https://accounts.zoho.eu/oauth/v2/token,AUTO_SYNC_ENABLED=true,AUTO_SYNC_INTERVAL_MINUTES=60'
+      - '--set-secrets'
+      - 'DB_PASSWORD=postgres-password:latest,ZOHO_CLIENT_ID=zoho-client-id:latest,ZOHO_CLIENT_SECRET=zoho-client-secret:latest,ZOHO_REFRESH_TOKEN=zoho-crm-refresh-token:latest'
+      - '--memory'
+      - '4Gi'
+      - '--cpu'
+      - '2'
+      - '--min-instances'
+      - '1'
+      - '--max-instances'
+      - '10'
+      - '--timeout'
+      - '900'
+      - '--concurrency'
+      - '80'
+      - '--execution-environment'
+      - 'gen2'
+
+images:
+  - 'gcr.io/$PROJECT_ID/zoho-crm-dashboard:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

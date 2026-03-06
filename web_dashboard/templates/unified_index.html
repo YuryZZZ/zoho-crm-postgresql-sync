@@ -1,0 +1,2016 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zoho CRM ↔ PostgreSQL Sync Dashboard</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --bg2: #1a1d27;
+  --bg3: #242836;
+  --bg4: #2e3344;
+  --border: #2e3344;
+  --text: #e4e7ef;
+  --text2: #9ba3b8;
+  --text3: #6b7394;
+  --accent: #6366f1;
+  --accent2: #818cf8;
+  --accent-dim: rgba(99,102,241,0.1);
+  --green: #22c55e;
+  --green2: #16a34a;
+  --green-dim: rgba(34,197,94,0.12);
+  --red: #ef4444;
+  --red-dim: rgba(239,68,68,0.12);
+  --orange: #f59e0b;
+  --orange-dim: rgba(245,158,11,0.12);
+  --blue: #3b82f6;
+  --blue-dim: rgba(59,130,246,0.12);
+  --cyan: #06b6d4;
+  --radius: 8px;
+  --shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+a { color: var(--accent2); text-decoration: none; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 3px; }
+
+/* Header */
+.header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; }
+.header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.header h1 .icon { width: 28px; height: 28px; background: var(--accent); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.header-right { display: flex; align-items: center; gap: 12px; }
+.conn-badge { font-size: 11px; padding: 3px 10px; border-radius: 12px; font-weight: 600; letter-spacing: 0.3px; }
+.conn-ok { background: var(--green-dim); color: var(--green); }
+.conn-err { background: var(--red-dim); color: var(--red); }
+.db-badge { font-size: 11px; padding: 3px 10px; border-radius: 12px; font-weight: 600; background: var(--blue-dim); color: var(--blue); }
+
+/* Tabs */
+.tabs { display: flex; background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 24px; gap: 2px; overflow-x: auto; }
+.tab { padding: 10px 16px; cursor: pointer; color: var(--text2); font-size: 13px; font-weight: 500; border-bottom: 2px solid transparent; transition: all 0.15s; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.tab:hover { color: var(--text); background: rgba(255,255,255,0.02); }
+.tab.active { color: var(--accent2); border-bottom-color: var(--accent); }
+.tab .tab-count { font-size: 10px; background: var(--bg3); padding: 1px 6px; border-radius: 8px; }
+
+/* Main content */
+.content { padding: 20px 24px; height: calc(100vh - 95px); overflow-y: auto; }
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* Cards */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; transition: border-color 0.15s; }
+.card:hover { border-color: var(--bg4); }
+.card-label { font-size: 11px; color: var(--text3); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600; }
+.card-value { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
+.card-sub { font-size: 11px; color: var(--text2); margin-top: 4px; }
+.card-accent { border-left: 3px solid var(--accent); }
+
+/* Section boxes */
+.section-box { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+.section-box h3 { font-size: 15px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+.section-box h3 .count-badge { font-size: 11px; background: var(--accent-dim); color: var(--accent2); padding: 2px 8px; border-radius: 8px; }
+
+/* Tables */
+.data-table-wrap { overflow-x: auto; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); }
+table { width: 100%; border-collapse: collapse; }
+th { background: var(--bg3); padding: 9px 12px; text-align: left; font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; border-bottom: 1px solid var(--border); position: sticky; top: 0; cursor: pointer; user-select: none; white-space: nowrap; }
+th:hover { color: var(--text2); }
+th .sort-icon { margin-left: 2px; opacity: 0.6; }
+td { padding: 7px 12px; border-bottom: 1px solid rgba(46,51,68,0.5); font-size: 13px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+tr:hover td { background: rgba(255,255,255,0.015); }
+tr.selected td { background: var(--accent-dim); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.2px; }
+.badge-synced { background: var(--green-dim); color: var(--green); }
+.badge-pending { background: var(--orange-dim); color: var(--orange); }
+.badge-modified { background: var(--blue-dim); color: var(--blue); }
+.badge-error { background: var(--red-dim); color: var(--red); }
+
+/* Checkbox in table */
+.row-check { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+th .row-check { margin: 0; }
+
+/* Buttons */
+.btn { padding: 7px 14px; border: none; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.12s; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover:not(:disabled) { background: #5558e6; }
+.btn-success { background: var(--green2); color: white; }
+.btn-success:hover:not(:disabled) { background: var(--green); }
+.btn-danger { background: #dc2626; color: white; }
+.btn-danger:hover:not(:disabled) { background: var(--red); }
+.btn-secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover:not(:disabled) { background: var(--bg4); }
+.btn-warning { background: #d97706; color: white; }
+.btn-warning:hover:not(:disabled) { background: var(--orange); }
+.btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 4px; }
+.btn-xs { padding: 2px 8px; font-size: 11px; border-radius: 4px; }
+.btn-group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.btn-icon { padding: 6px 8px; }
+
+/* Forms */
+.form-group { margin-bottom: 12px; }
+.form-label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 4px; font-weight: 500; }
+.form-input, .form-select { width: 100%; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; outline: none; transition: border-color 0.15s; }
+.form-input:focus, .form-select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(99,102,241,0.15); }
+textarea.form-input { min-height: 80px; resize: vertical; }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.form-hint { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+/* Toolbar */
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.toolbar .search-wrap { flex: 1; min-width: 200px; position: relative; }
+.toolbar .search-wrap input { padding-left: 32px; }
+.toolbar .search-wrap::before { content: "⌕"; position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text3); font-size: 14px; }
+
+/* Bulk bar */
+.bulk-bar { display: none; background: var(--accent-dim); border: 1px solid rgba(99,102,241,0.3); border-radius: var(--radius); padding: 10px 16px; margin-bottom: 12px; align-items: center; gap: 12px; }
+.bulk-bar.visible { display: flex; }
+.bulk-bar .bulk-count { font-weight: 600; color: var(--accent2); }
+
+/* Pagination */
+.pagination { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; }
+.page-info { font-size: 12px; color: var(--text2); }
+.page-btns { display: flex; gap: 3px; }
+.page-btn { padding: 5px 10px; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; color: var(--text2); cursor: pointer; font-size: 12px; }
+.page-btn:hover { background: var(--bg4); color: var(--text); }
+.page-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
+
+/* Progress bar */
+.progress-bar { height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 0.3s; border-radius: 3px; }
+
+/* Sync log */
+.sync-log { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 12px; max-height: 300px; overflow-y: auto; line-height: 1.6; }
+.sync-log-entry { padding: 1px 0; }
+.sync-log-entry.success { color: var(--green); }
+.sync-log-entry.error { color: var(--red); }
+
+/* Module grid */
+.module-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin: 12px 0; }
+.module-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; cursor: pointer; transition: all 0.12s; }
+.module-card:hover { border-color: var(--accent); }
+.module-card.selected { border-color: var(--accent); background: var(--accent-dim); }
+.module-card h4 { font-size: 13px; margin-bottom: 3px; }
+.module-card .meta { font-size: 11px; color: var(--text2); }
+
+/* Enrichment */
+.enrich-section { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
+.enrich-section h3 { font-size: 15px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.completeness-bar { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+.completeness-bar .field-name { width: 150px; font-size: 12px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; }
+.completeness-bar .bar { flex: 1; height: 7px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+.completeness-bar .bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+.completeness-bar .pct { width: 42px; text-align: right; font-size: 12px; font-weight: 600; }
+
+/* Upload area */
+.upload-area { border: 2px dashed var(--border); border-radius: var(--radius); padding: 40px; text-align: center; cursor: pointer; transition: all 0.2s; }
+.upload-area:hover, .upload-area.dragover { border-color: var(--accent); background: var(--accent-dim); }
+.upload-area input[type=file] { display: none; }
+.upload-icon { font-size: 36px; margin-bottom: 8px; opacity: 0.5; }
+
+/* Modal */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 100; align-items: flex-start; justify-content: center; padding-top: 60px; overflow-y: auto; }
+.modal-overlay.active { display: flex; }
+.modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 24px; max-width: 800px; width: 92%; max-height: calc(100vh - 120px); overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+.modal h2 { font-size: 17px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; }
+.modal h2 .close-btn { cursor: pointer; color: var(--text3); font-size: 20px; padding: 4px; }
+.modal h2 .close-btn:hover { color: var(--text); }
+
+/* Merge modal specific */
+.merge-records { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin: 16px 0; }
+.merge-record-card { border: 2px solid var(--border); border-radius: var(--radius); padding: 12px; cursor: pointer; transition: all 0.12s; }
+.merge-record-card:hover { border-color: var(--accent); }
+.merge-record-card.keeper { border-color: var(--green); background: var(--green-dim); }
+.merge-record-card .field-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; border-bottom: 1px solid rgba(46,51,68,0.3); }
+.merge-record-card .field-row .label { color: var(--text3); }
+.merge-record-card .field-row .value { color: var(--text); max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+
+/* Toast */
+.toast-container { position: fixed; top: 16px; right: 16px; z-index: 200; display: flex; flex-direction: column; gap: 6px; max-width: 380px; }
+.toast { padding: 10px 16px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow); animation: slideIn 0.25s ease; display: flex; align-items: center; gap: 8px; }
+@keyframes slideIn { from { transform: translateX(80px); opacity: 0; } to { transform: none; opacity: 1; } }
+.toast-success { background: var(--green2); color: white; }
+.toast-error { background: #dc2626; color: white; }
+.toast-info { background: var(--accent); color: white; }
+.toast-warning { background: #b45309; color: white; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .form-row, .form-row-3 { grid-template-columns: 1fr; }
+  .cards { grid-template-columns: 1fr 1fr; }
+  .content { padding: 12px; }
+  .header { padding: 8px 12px; }
+  .tabs { padding: 0 12px; }
+}
+
+/* Empty state */
+.empty-state { text-align: center; padding: 40px 20px; color: var(--text3); }
+.empty-state .icon { font-size: 36px; margin-bottom: 8px; }
+
+/* SQL editor */
+#sqlInput { tab-size: 2; white-space: pre; }
+#sqlResultTable table { font-size: 12px; }
+#sqlResultTable td { max-width: 300px; }
+
+/* Module card sync button */
+.module-card .sync-btn { display: none; margin-top: 6px; }
+.module-card:hover .sync-btn { display: inline-flex; }
+
+/* Auto-sync display */
+.auto-sync-stat { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid rgba(46,51,68,0.3); }
+.auto-sync-stat:last-child { border-bottom: none; }
+
+/* AI Chat */
+.chat-msg { margin-bottom:12px; padding:8px 12px; border-radius:8px; max-width:90%; word-wrap:break-word; }
+.chat-msg.chat-user { background:var(--accent-dim); color:var(--accent); margin-left:auto; text-align:right; border-bottom-right-radius:2px; }
+.chat-msg.chat-ai { background:var(--surface2); color:var(--text1); border-bottom-left-radius:2px; }
+.chat-msg.chat-system { background:transparent; color:var(--text3); font-style:italic; text-align:center; font-size:12px; }
+.chat-msg.chat-tool { background:rgba(46,51,68,0.4); color:var(--text2); font-size:11px; font-family:monospace; border-left:3px solid var(--accent2); padding:6px 10px; }
+.chat-msg pre { background:var(--bg); padding:8px; border-radius:4px; overflow-x:auto; font-size:12px; margin:6px 0; }
+.chat-msg code { font-size:12px; }
+.chat-msg table { border-collapse:collapse; margin:8px 0; font-size:12px; width:100%; }
+.chat-msg table th, .chat-msg table td { border:1px solid var(--border); padding:4px 8px; text-align:left; }
+.chat-msg table th { background:var(--bg); color:var(--text2); }
+#chatInput:focus { border-color:var(--accent); outline:none; }
+.chat-loading { display:inline-block; width:6px; height:6px; background:var(--accent); border-radius:50%; margin:0 2px; animation:chatPulse 1s infinite ease-in-out; }
+.chat-loading:nth-child(2) { animation-delay:0.2s; }
+.chat-loading:nth-child(3) { animation-delay:0.4s; }
+@keyframes chatPulse { 0%,100%{opacity:0.3;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.2)} }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><div class="icon">⟳</div> Zoho CRM <span style="color:var(--accent2)">↔</span> PostgreSQL</h1>
+  <div class="header-right">
+    <span id="dbBadge" class="db-badge">DB: Connecting...</span>
+    <span id="connBadge" class="conn-badge conn-err">Zoho: Checking...</span>
+    <span style="color:var(--text3);font-size:11px" id="clockEl"></span>
+  </div>
+</div>
+
+<div class="tabs" id="tabsEl">
+  <div class="tab active" data-tab="dashboard">Dashboard</div>
+  <div class="tab" data-tab="browse">Data Browser</div>
+  <div class="tab" data-tab="create">Create Record</div>
+  <div class="tab" data-tab="upload">Upload Data</div>
+  <div class="tab" data-tab="enrich">Enrich & Deduplicate</div>
+  <div class="tab" data-tab="sql">SQL Query</div>
+  <div class="tab" data-tab="tables">Table Manager</div>
+  <div class="tab" data-tab="sync">Sync Control</div>
+  <div class="tab" data-tab="chat">AI Chat</div>
+</div>
+
+<div class="content">
+  <!-- ==================== DASHBOARD ==================== -->
+  <div class="panel active" id="panel-dashboard">
+    <div class="cards" id="dashCards"></div>
+    <div class="section-box">
+      <h3>Module Overview</h3>
+      <div class="data-table-wrap">
+        <table>
+          <thead><tr><th>Module</th><th>Table</th><th>Records</th><th>Synced</th><th>Pending</th><th>Modified</th><th>Errors</th><th>24h Activity</th><th>Last Sync</th></tr></thead>
+          <tbody id="dashTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== DATA BROWSER ==================== -->
+  <div class="panel" id="panel-browse">
+    <div class="toolbar">
+      <select class="form-select" id="browseTable" style="width:180px"></select>
+      <div class="search-wrap">
+        <input class="form-input" id="browseSearch" placeholder="Search records..." />
+      </div>
+      <select class="form-select" id="browseSyncFilter" style="width:130px">
+        <option value="">All statuses</option>
+        <option value="synced">Synced</option>
+        <option value="pending">Pending</option>
+        <option value="modified">Modified</option>
+        <option value="error">Error</option>
+      </select>
+      <button class="btn btn-secondary btn-sm" onclick="loadTableData()">Refresh</button>
+      <div class="btn-group" style="margin-left:auto">
+        <button class="btn btn-secondary btn-sm" onclick="exportTable('csv')">CSV</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportTable('json')">JSON</button>
+      </div>
+    </div>
+
+    <!-- Bulk actions bar -->
+    <div class="bulk-bar" id="bulkBar">
+      <span class="bulk-count"><span id="bulkCount">0</span> selected</span>
+      <button class="btn btn-sm btn-primary" onclick="bulkAction('push_to_zoho')">Push to Zoho</button>
+      <button class="btn btn-sm btn-warning" onclick="bulkAction('mark_pending')">Mark Pending</button>
+      <button class="btn btn-sm btn-secondary" onclick="bulkAction('update_status')">Set Status...</button>
+      <button class="btn btn-sm btn-danger" onclick="bulkAction('delete')">Delete</button>
+      <button class="btn btn-sm btn-secondary" onclick="clearSelection()" style="margin-left:auto">Clear</button>
+    </div>
+
+    <div class="data-table-wrap" id="browseTableWrap">
+      <table><thead id="browseHead"></thead><tbody id="browseBody"></tbody></table>
+    </div>
+    <div class="pagination">
+      <div class="page-info" id="browsePageInfo"></div>
+      <div class="page-btns" id="browsePageBtns"></div>
+    </div>
+  </div>
+
+  <!-- ==================== CREATE RECORD ==================== -->
+  <div class="panel" id="panel-create">
+    <div style="max-width:800px">
+      <div class="toolbar">
+        <select class="form-select" id="createTable" style="width:200px" onchange="loadCreateForm()"></select>
+        <span style="color:var(--text2);font-size:12px">New records are saved with <span class="badge badge-pending">pending</span> status for sync to Zoho</span>
+      </div>
+      <div id="createForm"></div>
+      <div style="margin-top:16px" class="btn-group">
+        <button class="btn btn-primary" onclick="submitCreateForm()">Create Record</button>
+        <button class="btn btn-secondary" onclick="loadCreateForm()">Reset Form</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== UPLOAD DATA ==================== -->
+  <div class="panel" id="panel-upload">
+    <div style="max-width:900px">
+      <div class="toolbar">
+        <select class="form-select" id="uploadTable" style="width:200px"></select>
+        <span style="margin:0 8px;color:var(--text3)">or</span>
+        <input type="text" id="uploadNewTableName" placeholder="New table name..." style="width:160px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text1);font-size:13px">
+        <span style="color:var(--text2);font-size:12px;margin-left:8px">Upload CSV/Excel up to 500MB. Large files process in background.</span>
+      </div>
+      <div class="upload-area" id="uploadArea" onclick="document.getElementById('uploadFile').click()">
+        <input type="file" id="uploadFile" accept=".xlsx,.xls,.csv" onchange="handleFileSelect(this)" />
+        <div class="upload-icon">📁</div>
+        <p style="font-size:15px;margin-bottom:6px;font-weight:500">Drop Excel or CSV file here</p>
+        <p style="color:var(--text3);font-size:12px">Supports .xlsx, .xls, .csv</p>
+      </div>
+      <div id="uploadPreview" style="display:none;margin-top:20px">
+        <div class="section-box">
+          <h3>Column Mapping <span class="count-badge" id="uploadRowCount">0 rows</span></h3>
+          <p style="color:var(--text2);font-size:12px;margin-bottom:12px">Map your file columns to database columns. Unmatched columns will be skipped.</p>
+          <div id="uploadMappingArea"></div>
+        </div>
+        <div class="section-box">
+          <h3>Data Preview</h3>
+          <div class="data-table-wrap" id="uploadSampleTable"></div>
+        </div>
+        <div class="btn-group" style="margin-top:16px">
+          <button class="btn btn-primary" onclick="executeImport()">Import Data</button>
+          <button class="btn btn-secondary" onclick="resetUpload()">Cancel</button>
+        </div>
+      </div>
+      <div id="uploadResult" style="display:none;margin-top:20px"></div>
+    </div>
+  </div>
+
+  <!-- ==================== ENRICH & DEDUPLICATE ==================== -->
+  <div class="panel" id="panel-enrich">
+    <div class="toolbar">
+      <select class="form-select" id="enrichTable" style="width:200px" onchange="loadEnrichData()"></select>
+      <button class="btn btn-primary" onclick="loadEnrichData()">Analyze</button>
+      <button class="btn btn-secondary" onclick="loadFuzzyDuplicates()">Fuzzy Match</button>
+      <button class="btn btn-secondary" onclick="loadCrossModuleDuplicates()">Cross-Module</button>
+      <button class="btn btn-secondary" onclick="loadRecentChanges()">Change Log</button>
+    </div>
+    <div id="enrichContent">
+      <div class="empty-state">
+        <div class="icon">🔍</div>
+        <p>Select a table to analyze data quality, find duplicates, and validate records.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== SQL QUERY ==================== -->
+  <div class="panel" id="panel-sql">
+    <div class="section-box">
+      <h3>SQL Query Console</h3>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">Execute read-only SQL queries (SELECT, WITH, EXPLAIN) against the PostgreSQL database.</p>
+      <textarea class="form-input" id="sqlInput" style="font-family:'JetBrains Mono','Fira Code',monospace;font-size:13px;min-height:120px;background:var(--bg);color:var(--green)" placeholder="SELECT * FROM leads LIMIT 10;&#10;&#10;-- Try: SELECT table_name, COUNT(*) FROM information_schema.columns GROUP BY table_name ORDER BY count DESC;"></textarea>
+      <div class="btn-group" style="margin-top:10px">
+        <button class="btn btn-primary" onclick="runSQL()">Execute Query</button>
+        <button class="btn btn-secondary btn-sm" onclick="$('sqlInput').value=''">Clear</button>
+        <span id="sqlTimer" style="color:var(--text3);font-size:11px;margin-left:auto"></span>
+      </div>
+    </div>
+    <div id="sqlResultArea" style="margin-top:16px;display:none">
+      <div class="section-box">
+        <h3>Results <span class="count-badge" id="sqlResultCount">0 rows</span></h3>
+        <div class="data-table-wrap" id="sqlResultTable" style="max-height:500px;overflow:auto"></div>
+      </div>
+    </div>
+    <div class="section-box" style="margin-top:16px">
+      <h3>Quick Queries</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px">
+        <button class="btn btn-secondary btn-sm" onclick="quickSQL('SELECT table_name, COUNT(*) as columns FROM information_schema.columns WHERE table_schema=\'public\' GROUP BY table_name ORDER BY columns DESC')">Table Column Counts</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSQL('SELECT relname as table_name, n_live_tup as row_count FROM pg_stat_user_tables ORDER BY n_live_tup DESC')">Row Counts (fast)</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSQL('SELECT * FROM sync_metadata ORDER BY last_sync_timestamp DESC NULLS LAST')">Sync Metadata</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSQL('SELECT id, job_type, status, total_records, duration_seconds, started_at FROM sync_jobs ORDER BY started_at DESC LIMIT 20')">Recent Sync Jobs</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSQL('SELECT status, COUNT(*) as cnt FROM email_tracking GROUP BY status ORDER BY cnt DESC')">Email Status Distribution</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSQL('SELECT parent_module, COUNT(*) as cnt FROM email_tracking GROUP BY parent_module')">Emails by Module</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSQL('SELECT pg_size_pretty(pg_total_relation_size(quote_ident(table_name))) as size, table_name FROM information_schema.tables WHERE table_schema=\'public\' ORDER BY pg_total_relation_size(quote_ident(table_name)) DESC')">Table Sizes</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSQL('SELECT schemaname, indexname, tablename, pg_size_pretty(pg_relation_size(quote_ident(indexname)::regclass)) as size FROM pg_indexes WHERE schemaname=\'public\' ORDER BY pg_relation_size(quote_ident(indexname)::regclass) DESC LIMIT 20')">Index Sizes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== TABLE MANAGER ==================== -->
+  <div class="panel" id="panel-tables">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div class="section-box">
+        <h3>Create New Table</h3>
+        <div class="form-group">
+          <label class="form-label">Table Name</label>
+          <input class="form-input" id="newTableName" placeholder="my_custom_table" />
+          <div class="form-hint">Lowercase, letters/numbers/underscores only</div>
+        </div>
+        <div id="newTableColumns">
+          <div class="form-label" style="margin-bottom:6px">Columns (id SERIAL PRIMARY KEY added automatically)</div>
+          <div class="new-col-row" style="display:grid;grid-template-columns:1fr 1fr 30px;gap:6px;margin-bottom:6px">
+            <input class="form-input" placeholder="column_name" />
+            <select class="form-select">
+              <option value="TEXT">TEXT</option>
+              <option value="VARCHAR(255)">VARCHAR(255)</option>
+              <option value="INTEGER">INTEGER</option>
+              <option value="BIGINT">BIGINT</option>
+              <option value="NUMERIC">NUMERIC</option>
+              <option value="BOOLEAN">BOOLEAN</option>
+              <option value="TIMESTAMP WITH TIME ZONE">TIMESTAMP</option>
+              <option value="DATE">DATE</option>
+              <option value="JSONB">JSONB</option>
+            </select>
+            <span></span>
+          </div>
+        </div>
+        <div class="btn-group" style="margin-top:8px">
+          <button class="btn btn-secondary btn-sm" onclick="addColumnRow()">+ Add Column</button>
+          <button class="btn btn-primary" onclick="createTable()">Create Table</button>
+        </div>
+      </div>
+      <div class="section-box">
+        <h3>Add Column to Existing Table</h3>
+        <div class="form-group">
+          <label class="form-label">Table</label>
+          <select class="form-select" id="alterTableSelect"></select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Column Name</label>
+            <input class="form-input" id="alterColName" placeholder="new_column" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Type</label>
+            <select class="form-select" id="alterColType">
+              <option value="TEXT">TEXT</option>
+              <option value="VARCHAR(255)">VARCHAR(255)</option>
+              <option value="INTEGER">INTEGER</option>
+              <option value="BIGINT">BIGINT</option>
+              <option value="NUMERIC">NUMERIC</option>
+              <option value="BOOLEAN">BOOLEAN</option>
+              <option value="TIMESTAMP WITH TIME ZONE">TIMESTAMP</option>
+              <option value="JSONB">JSONB</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="addColumn()">Add Column</button>
+      </div>
+    </div>
+    <div class="section-box">
+      <h3>All Tables <span class="count-badge" id="tableCount">0</span></h3>
+      <div class="data-table-wrap" id="allTablesWrap">
+        <table>
+          <thead><tr><th>Table</th><th>Rows</th><th>Columns</th><th>Type</th><th>Actions</th></tr></thead>
+          <tbody id="allTablesBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== SYNC CONTROL ==================== -->
+  <div class="panel" id="panel-sync">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div class="section-box">
+        <h3>Pull from Zoho CRM</h3>
+        <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Download records from Zoho CRM into PostgreSQL. Click a module to sync it individually, or use buttons below for batch sync.</p>
+        <div class="module-grid" id="pullModules"></div>
+        <div class="btn-group" style="margin-top:12px">
+          <button class="btn btn-primary" id="btnPullAll" onclick="startSync('pull')">Pull All Modules</button>
+          <button class="btn btn-secondary" id="btnPullSelected" onclick="startSync('pull', getSelectedModules('pull'))">Pull Selected</button>
+        </div>
+      </div>
+      <div class="section-box">
+        <h3>Push to Zoho CRM</h3>
+        <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Push updated/enriched records from PostgreSQL back to Zoho CRM. Records with <span class="badge badge-pending">pending</span> or <span class="badge badge-modified">modified</span> status will be pushed.</p>
+        <div class="module-grid" id="pushModules"></div>
+        <div class="btn-group" style="margin-top:12px">
+          <button class="btn btn-success" id="btnPushAll" onclick="startSync('push')">Push All Pending</button>
+          <button class="btn btn-secondary" id="btnPushSelected" onclick="startSync('push', getSelectedModules('push'))">Push Selected</button>
+          <button class="btn btn-secondary" id="btnPushPreview" onclick="loadPushPreview()">Preview Changes</button>
+        </div>
+        <div id="pushPreviewArea" style="display:none;margin-top:14px">
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:250px;overflow-y:auto">
+            <div id="pushPreviewContent"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px">
+      <div class="section-box">
+        <h3>Full Bidirectional Sync</h3>
+        <p style="color:var(--text2);font-size:12px;margin-bottom:12px">Pull all from Zoho, then push pending back.</p>
+        <button class="btn btn-primary" id="btnFullSync" onclick="startSync('full')">Full Sync</button>
+      </div>
+      <div class="section-box">
+        <h3>Email Tracking Import</h3>
+        <p style="color:var(--text2);font-size:12px;margin-bottom:12px">Import email activity via COQL (all leads + contacts).</p>
+        <button class="btn btn-warning" id="btnImportEmails" onclick="startImport('import-emails')">Import Emails</button>
+      </div>
+      <div class="section-box">
+        <h3>Site Visits Import</h3>
+        <p style="color:var(--text2);font-size:12px;margin-bottom:12px">Import visit tracking data from contacts.</p>
+        <button class="btn btn-warning" id="btnImportVisits" onclick="startImport('import-visits')">Import Visits</button>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div class="section-box">
+        <h3>Sync Status</h3>
+        <div id="syncStatusArea">
+          <p style="color:var(--text3)">No sync in progress</p>
+        </div>
+        <div class="btn-group" style="margin-top:10px">
+          <button class="btn btn-danger btn-sm" onclick="resetSync()">Reset Stuck Sync</button>
+        </div>
+      </div>
+      <div class="section-box">
+        <h3>Auto-Sync Settings</h3>
+        <div id="autoSyncArea" style="color:var(--text2);font-size:13px">Loading...</div>
+      </div>
+    </div>
+
+    <div class="section-box">
+      <h3>Sync History <span class="count-badge" id="syncHistoryCount">0</span></h3>
+      <div class="data-table-wrap" style="max-height:300px;overflow-y:auto">
+        <table>
+          <thead><tr><th>Type</th><th>Status</th><th>Records</th><th>Created</th><th>Updated</th><th>Failed</th><th>Duration</th><th>Started</th></tr></thead>
+          <tbody id="syncHistoryBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== AI CHAT ==================== -->
+  <div class="panel" id="panel-chat">
+    <div style="display:grid;grid-template-columns:1fr;gap:16px;height:calc(100vh - 180px)">
+      <div class="section-box" style="display:flex;flex-direction:column;height:100%">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Gemini AI Assistant <span id="chatStatusBadge" class="badge" style="font-size:10px;padding:2px 8px">checking...</span></h3>
+          <div class="btn-group">
+            <button class="btn btn-secondary btn-sm" onclick="resetChat()">New Chat</button>
+          </div>
+        </div>
+        <div id="chatMessages" style="flex:1;overflow-y:auto;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:12px;font-size:13px;line-height:1.6">
+          <div class="chat-msg chat-system">Ask me anything about your CRM data. I can run SQL queries, list tables, describe schemas, and help with data analysis.</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="chatInput" placeholder="Ask about your data... (e.g., 'How many leads were created this month?')"
+            style="flex:1;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text1);font-size:13px"
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}">
+          <button class="btn btn-primary" id="btnSendChat" onclick="sendChat()">Send</button>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap" id="chatSuggestions">
+          <button class="btn btn-secondary btn-sm" onclick="sendQuickChat('Show me a summary of all tables and record counts')">Table Summary</button>
+          <button class="btn btn-secondary btn-sm" onclick="sendQuickChat('How many leads, contacts, and deals do we have?')">CRM Overview</button>
+          <button class="btn btn-secondary btn-sm" onclick="sendQuickChat('Show me the 10 most recently modified leads')">Recent Leads</button>
+          <button class="btn btn-secondary btn-sm" onclick="sendQuickChat('What email tracking data do we have? Show statistics')">Email Stats</button>
+          <button class="btn btn-secondary btn-sm" onclick="sendQuickChat('Find any records with sync_status = error')">Sync Errors</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="editModal">
+  <div class="modal">
+    <h2 id="editModalTitle">Edit Record <span class="close-btn" onclick="closeModal('editModal')">✕</span></h2>
+    <div id="editModalForm"></div>
+    <div style="margin-top:16px" class="btn-group">
+      <button class="btn btn-primary" onclick="submitEditForm()">Save Changes</button>
+      <button class="btn btn-success btn-sm" onclick="pushSingleRecord()">Push to Zoho</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteEditRecord()">Delete</button>
+      <button class="btn btn-secondary" onclick="closeModal('editModal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Merge Modal -->
+<div class="modal-overlay" id="mergeModal">
+  <div class="modal" style="max-width:950px">
+    <h2>Merge Duplicate Records <span class="close-btn" onclick="closeModal('mergeModal')">✕</span></h2>
+    <p style="color:var(--text2);font-size:13px;margin-bottom:16px">Click a record to select it as the <strong style="color:var(--green)">keeper</strong>. Other records will be merged into it (filling empty fields) and then removed.</p>
+    <div class="merge-records" id="mergeRecords"></div>
+    <div style="margin-top:16px" class="btn-group">
+      <button class="btn btn-primary" id="btnMerge" onclick="executeMerge()" disabled>Select a keeper to merge</button>
+      <button class="btn btn-secondary" onclick="closeModal('mergeModal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Status Modal -->
+<div class="modal-overlay" id="statusModal">
+  <div class="modal" style="max-width:400px">
+    <h2>Set Sync Status <span class="close-btn" onclick="closeModal('statusModal')">✕</span></h2>
+    <p style="color:var(--text2);font-size:13px;margin-bottom:14px">Change sync status for <strong id="statusCount">0</strong> selected records:</p>
+    <div style="display:grid;gap:8px">
+      <button class="btn btn-success" onclick="applyBulkStatus('synced')"><span class="badge badge-synced">synced</span> Mark as synced</button>
+      <button class="btn btn-warning" onclick="applyBulkStatus('pending')"><span class="badge badge-pending">pending</span> Mark as pending</button>
+      <button class="btn btn-primary" onclick="applyBulkStatus('modified')"><span class="badge badge-modified">modified</span> Mark as modified</button>
+      <button class="btn btn-danger" onclick="applyBulkStatus('error')"><span class="badge badge-error">error</span> Mark as error</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toasts"></div>
+
+<script>
+// ============================================================
+// STATE
+// ============================================================
+let dashData = null;
+let statsData = null;
+let currentTable = '';
+let currentPage = 1;
+let currentSort = '';
+let currentDir = 'desc';
+let browseColumns = [];
+let browsePk = 'id';
+let editRecordId = null;
+let editTable = null;
+let uploadedFile = null;
+let uploadMapping = {};
+let syncPollInterval = null;
+let selectedRows = new Set();
+let mergeTable = '';
+let mergeKeeperId = null;
+let mergeIds = [];
+
+// ============================================================
+// UTILS
+// ============================================================
+async function api(url, opts = {}) {
+  try {
+    const r = await fetch(url, opts);
+    const d = await r.json();
+    if (!r.ok && d.error) throw new Error(d.error);
+    return d;
+  } catch (e) { toast(e.message, 'error'); throw e; }
+}
+
+function toast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+function $(id) { return document.getElementById(id); }
+
+function badgeFor(status) {
+  const map = {synced:'badge-synced',pending:'badge-pending',modified:'badge-modified',error:'badge-error',conflict:'badge-error'};
+  return `<span class="badge ${map[status]||''}">${status||'—'}</span>`;
+}
+
+function shortDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-GB', {day:'2-digit',month:'short'}) + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+}
+
+function truncate(val, len=50) {
+  if (val === null || val === undefined) return '';
+  const s = String(val);
+  return s.length > len ? s.slice(0, len) + '…' : s;
+}
+
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+// ============================================================
+// TABS
+// ============================================================
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    $('panel-' + tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab === 'dashboard') loadDashboard();
+    if (tab.dataset.tab === 'browse') { populateTableSelects(); if (currentTable) loadTableData(); }
+    if (tab.dataset.tab === 'sync') loadSyncPanel();
+    if (tab.dataset.tab === 'sql') { /* ready */ }
+    if (tab.dataset.tab === 'tables') loadTablesPanel();
+    if (tab.dataset.tab === 'chat') checkChatStatus();
+  });
+});
+
+// ============================================================
+// CLOCK
+// ============================================================
+setInterval(() => { $('clockEl').textContent = new Date().toLocaleTimeString(); }, 1000);
+
+// ============================================================
+// DASHBOARD
+// ============================================================
+async function loadDashboard() {
+  try {
+    const [dash, stats] = await Promise.all([
+      api('/api/dashboard'),
+      api('/api/stats/overview').catch(() => null)
+    ]);
+    dashData = dash;
+    statsData = stats;
+
+    // Connection badges
+    const badge = $('connBadge');
+    if (dash.zoho_connected) {
+      badge.className = 'conn-badge conn-ok'; badge.textContent = 'Zoho: Connected';
+    } else {
+      badge.className = 'conn-badge conn-err'; badge.textContent = 'Zoho: Disconnected';
+    }
+    $('dbBadge').className = 'db-badge';
+    $('dbBadge').textContent = `DB: ${dash.tables.length} tables`;
+
+    // Cards
+    const t = dash.totals;
+    const recent = stats?.modules?.reduce((s, m) => s + (m.recent_24h || 0), 0) || 0;
+    $('dashCards').innerHTML = `
+      <div class="card card-accent"><div class="card-label">Total Records</div><div class="card-value">${(t.records||0).toLocaleString()}</div><div class="card-sub">${dash.tables.length} CRM tables</div></div>
+      <div class="card"><div class="card-label">Synced</div><div class="card-value" style="color:var(--green)">${(t.synced||0).toLocaleString()}</div></div>
+      <div class="card"><div class="card-label">Pending</div><div class="card-value" style="color:var(--orange)">${(t.pending||0).toLocaleString()}</div></div>
+      <div class="card"><div class="card-label">Modified</div><div class="card-value" style="color:var(--blue)">${(t.modified||0).toLocaleString()}</div></div>
+      <div class="card"><div class="card-label">Errors</div><div class="card-value" style="color:var(--red)">${(t.error||0).toLocaleString()}</div></div>
+      <div class="card"><div class="card-label">24h Activity</div><div class="card-value" style="color:var(--cyan)">${recent.toLocaleString()}</div></div>
+    `;
+
+    // Module table
+    const modules = stats?.modules || dash.tables;
+    $('dashTableBody').innerHTML = modules.map(r => `
+      <tr style="cursor:pointer" onclick="browseTo('${r.table}')">
+        <td><strong>${r.module}</strong></td>
+        <td style="color:var(--text3)">${r.table}</td>
+        <td>${(r.total||r.count||0).toLocaleString()}</td>
+        <td>${badgeFor('synced')} ${r.synced||0}</td>
+        <td>${(r.pending||0) > 0 ? badgeFor('pending') + ' ' + r.pending : '<span style="color:var(--text3)">—</span>'}</td>
+        <td>${(r.modified||0) > 0 ? badgeFor('modified') + ' ' + r.modified : '<span style="color:var(--text3)">—</span>'}</td>
+        <td>${(r.error||0) > 0 ? badgeFor('error') + ' ' + r.error : '<span style="color:var(--text3)">—</span>'}</td>
+        <td style="color:var(--text3);font-size:12px">${r.recent_24h !== undefined ? r.recent_24h : '—'}</td>
+        <td style="color:var(--text3);font-size:11px">${shortDate(r.last_sync)}</td>
+      </tr>
+    `).join('');
+
+    populateTableSelects();
+  } catch (e) {
+    $('dbBadge').textContent = 'DB: Error';
+    $('dbBadge').style.background = 'var(--red-dim)';
+    $('dbBadge').style.color = 'var(--red)';
+  }
+}
+
+function browseTo(table) {
+  $('browseTable').value = table;
+  currentTable = table;
+  currentPage = 1;
+  document.querySelectorAll('.tab')[1].click();
+}
+
+function populateTableSelects() {
+  if (!dashData) return;
+  const crmTables = dashData.tables.map(t => t.table);
+  const allTables = dashData.all_tables || crmTables;
+
+  ['browseTable','createTable','uploadTable','enrichTable'].forEach(id => {
+    const sel = $(id);
+    const curVal = sel.value;
+    sel.innerHTML = '<option value="">Select table...</option>';
+    // CRM tables first
+    if (crmTables.length) {
+      const grp = document.createElement('optgroup');
+      grp.label = 'CRM Modules';
+      crmTables.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t; grp.appendChild(o); });
+      sel.appendChild(grp);
+    }
+    // Other tables
+    const others = allTables.filter(t => !crmTables.includes(t));
+    if (others.length) {
+      const grp = document.createElement('optgroup');
+      grp.label = 'Other Tables';
+      others.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t; grp.appendChild(o); });
+      sel.appendChild(grp);
+    }
+    if (curVal) sel.value = curVal;
+    else if (crmTables[0]) sel.value = crmTables[0];
+  });
+}
+
+// ============================================================
+// DATA BROWSER
+// ============================================================
+$('browseTable').addEventListener('change', () => { currentTable = $('browseTable').value; currentPage = 1; clearSelection(); loadTableData(); });
+$('browseSearch').addEventListener('keyup', debounce(() => { currentPage = 1; loadTableData(); }, 350));
+$('browseSyncFilter').addEventListener('change', () => { currentPage = 1; loadTableData(); });
+
+async function loadTableData() {
+  currentTable = $('browseTable').value;
+  if (!currentTable) return;
+
+  const params = new URLSearchParams({
+    page: currentPage, per_page: 50,
+    search: $('browseSearch').value,
+    sync_status: $('browseSyncFilter').value,
+    sort: currentSort, dir: currentDir
+  });
+
+  try {
+    const d = await api(`/api/table/${currentTable}?${params}`);
+    browseColumns = d.columns;
+    browsePk = d.primary_key || 'id';
+
+    // Columns to show (skip system cols, limit to 10)
+    const skipCols = new Set(['custom_fields','zoho_created_by','zoho_modified_by','deleted_at','sync_version','zoho_created_time','zoho_modified_time']);
+    const displayCols = d.columns.filter(c => !skipCols.has(c.name)).slice(0, 10);
+
+    // Header with checkbox
+    $('browseHead').innerHTML = '<tr>' +
+      '<th style="width:32px"><input type="checkbox" class="row-check" onchange="toggleAllRows(this)" /></th>' +
+      displayCols.map(c => `<th onclick="sortBy('${c.name}')">${c.name}${currentSort===c.name ? '<span class="sort-icon">'+(currentDir==='asc'?'↑':'↓')+'</span>' : ''}</th>`).join('') +
+      '<th style="width:80px">Actions</th></tr>';
+
+    // Body
+    $('browseBody').innerHTML = d.data.map(row => {
+      const rid = row[browsePk];
+      const checked = selectedRows.has(String(rid)) ? 'checked' : '';
+      const selClass = selectedRows.has(String(rid)) ? ' selected' : '';
+      return `<tr class="${selClass}">` +
+        `<td><input type="checkbox" class="row-check" value="${rid}" ${checked} onchange="toggleRow(this)" /></td>` +
+        displayCols.map(c => {
+          const v = row[c.name];
+          if (c.name === 'sync_status') return `<td>${badgeFor(v)}</td>`;
+          return `<td title="${truncate(v, 200)}">${truncate(v)}</td>`;
+        }).join('') +
+        `<td>
+          <button class="btn btn-xs btn-secondary" onclick="openEdit('${currentTable}','${rid}')">Edit</button>
+          <button class="btn btn-xs btn-primary" onclick="pushOne('${currentTable}','${rid}')" title="Push to Zoho">⬆</button>
+        </td>` +
+        '</tr>';
+    }).join('') || '<tr><td colspan="99" class="empty-state">No records found</td></tr>';
+
+    // Pagination
+    const from = (d.page-1)*d.per_page+1;
+    const to = Math.min(d.page*d.per_page, d.total);
+    $('browsePageInfo').textContent = d.total > 0 ? `${from}–${to} of ${d.total.toLocaleString()}` : 'No records';
+
+    let btns = '';
+    const maxShow = 8;
+    let startP = Math.max(1, d.page - Math.floor(maxShow/2));
+    let endP = Math.min(d.total_pages, startP + maxShow - 1);
+    if (endP - startP < maxShow - 1) startP = Math.max(1, endP - maxShow + 1);
+
+    if (startP > 1) btns += `<div class="page-btn" onclick="goPage(1)">1</div><div class="page-btn" style="cursor:default">…</div>`;
+    for (let p = startP; p <= endP; p++) btns += `<div class="page-btn${p===d.page?' active':''}" onclick="goPage(${p})">${p}</div>`;
+    if (endP < d.total_pages) btns += `<div class="page-btn" style="cursor:default">…</div><div class="page-btn" onclick="goPage(${d.total_pages})">${d.total_pages}</div>`;
+    $('browsePageBtns').innerHTML = btns;
+
+    updateBulkBar();
+  } catch (e) { console.error(e); }
+}
+
+function sortBy(col) {
+  if (currentSort === col) currentDir = currentDir === 'asc' ? 'desc' : 'asc';
+  else { currentSort = col; currentDir = 'asc'; }
+  loadTableData();
+}
+function goPage(p) { currentPage = p; loadTableData(); }
+function exportTable(fmt) { if (currentTable) window.open(`/api/export/${currentTable}?format=${fmt}`, '_blank'); }
+
+// ============================================================
+// ROW SELECTION / BULK
+// ============================================================
+function toggleRow(cb) {
+  const id = String(cb.value);
+  if (cb.checked) selectedRows.add(id);
+  else selectedRows.delete(id);
+  cb.closest('tr').classList.toggle('selected', cb.checked);
+  updateBulkBar();
+}
+
+function toggleAllRows(cb) {
+  const checkboxes = $('browseBody').querySelectorAll('.row-check');
+  checkboxes.forEach(c => { c.checked = cb.checked; toggleRow(c); });
+}
+
+function clearSelection() {
+  selectedRows.clear();
+  const cbs = $('browseBody')?.querySelectorAll('.row-check');
+  if (cbs) cbs.forEach(c => { c.checked = false; c.closest('tr').classList.remove('selected'); });
+  const hdrCb = $('browseHead')?.querySelector('.row-check');
+  if (hdrCb) hdrCb.checked = false;
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const bar = $('bulkBar');
+  $('bulkCount').textContent = selectedRows.size;
+  bar.classList.toggle('visible', selectedRows.size > 0);
+}
+
+async function bulkAction(action) {
+  if (selectedRows.size === 0) return;
+  const ids = Array.from(selectedRows);
+
+  if (action === 'delete' && !confirm(`Delete ${ids.length} records?`)) return;
+  if (action === 'update_status') {
+    $('statusCount').textContent = ids.length;
+    $('statusModal').classList.add('active');
+    return;
+  }
+
+  try {
+    const r = await api(`/api/bulk/${currentTable}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action, record_ids: ids })
+    });
+    if (action === 'push_to_zoho') {
+      toast(`Push started for ${ids.length} records`, 'info');
+      if (!syncPollInterval) syncPollInterval = setInterval(pollSyncStatus, 2000);
+    } else {
+      toast(`${action}: ${r.affected || ids.length} records`, 'success');
+    }
+    clearSelection();
+    loadTableData();
+  } catch (e) {}
+}
+
+async function applyBulkStatus(status) {
+  const ids = Array.from(selectedRows);
+  closeModal('statusModal');
+  try {
+    await api(`/api/bulk/${currentTable}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action: 'update_status', status, record_ids: ids })
+    });
+    toast(`Set ${ids.length} records to ${status}`, 'success');
+    clearSelection();
+    loadTableData();
+  } catch (e) {}
+}
+
+async function pushOne(table, id) {
+  try {
+    await api(`/api/bulk/${table}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action: 'push_to_zoho', record_ids: [id] })
+    });
+    toast('Push started for 1 record', 'info');
+    if (!syncPollInterval) syncPollInterval = setInterval(pollSyncStatus, 2000);
+  } catch (e) {}
+}
+
+// ============================================================
+// EDIT MODAL
+// ============================================================
+async function openEdit(table, id) {
+  editTable = table; editRecordId = id;
+  try {
+    const d = await api(`/api/record/${table}/${id}`);
+    const rec = d.record;
+    const cols = d.columns;
+
+    $('editModalTitle').innerHTML = `Edit <span style="color:var(--accent2)">${table}</span> record <span class="close-btn" onclick="closeModal('editModal')">✕</span>`;
+    const skip = new Set(['id','created_at','full_name','custom_fields','zoho_created_time','zoho_modified_time','zoho_created_by','zoho_modified_by','sync_version','deleted_at']);
+    const editCols = cols.filter(c => !skip.has(c.name));
+
+    let html = '<div class="form-row">';
+    editCols.forEach((c, i) => {
+      const val = rec[c.name] || '';
+      const ro = c.name === 'zoho_id' ? 'readonly style="opacity:0.6"' : '';
+      const isStatus = c.name === 'sync_status';
+      if (isStatus) {
+        html += `<div class="form-group"><label class="form-label">${c.name}</label>
+          <select class="form-select" name="${c.name}">
+            <option value="pending" ${val==='pending'?'selected':''}>pending</option>
+            <option value="synced" ${val==='synced'?'selected':''}>synced</option>
+            <option value="modified" ${val==='modified'?'selected':''}>modified</option>
+            <option value="error" ${val==='error'?'selected':''}>error</option>
+          </select></div>`;
+      } else {
+        html += `<div class="form-group"><label class="form-label">${c.name}</label>
+          <input class="form-input" name="${c.name}" value="${String(val).replace(/"/g, '&quot;')}" ${ro} /></div>`;
+      }
+      if ((i + 1) % 2 === 0 && i < editCols.length - 1) html += '</div><div class="form-row">';
+    });
+    html += '</div>';
+    $('editModalForm').innerHTML = html;
+    $('editModal').classList.add('active');
+  } catch (e) {}
+}
+
+async function submitEditForm() {
+  const inputs = $('editModalForm').querySelectorAll('input, select');
+  const data = {};
+  inputs.forEach(i => { if (i.value !== '' && !i.readOnly) data[i.name] = i.value; });
+  try {
+    await api(`/api/record/${editTable}/${editRecordId}`, {
+      method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data)
+    });
+    toast('Record updated', 'success');
+    closeModal('editModal');
+    loadTableData();
+  } catch (e) {}
+}
+
+async function deleteEditRecord() {
+  if (!confirm('Delete this record?')) return;
+  try {
+    await api(`/api/record/${editTable}/${editRecordId}`, {method:'DELETE'});
+    toast('Record deleted', 'success');
+    closeModal('editModal');
+    loadTableData();
+  } catch (e) {}
+}
+
+async function pushSingleRecord() {
+  try {
+    await api(`/api/bulk/${editTable}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action: 'push_to_zoho', record_ids: [editRecordId] })
+    });
+    toast('Push to Zoho started', 'info');
+    closeModal('editModal');
+    if (!syncPollInterval) syncPollInterval = setInterval(pollSyncStatus, 2000);
+  } catch (e) {}
+}
+
+function closeModal(id) { $(id).classList.remove('active'); }
+
+// ============================================================
+// CREATE RECORD
+// ============================================================
+async function loadCreateForm() {
+  const table = $('createTable').value;
+  if (!table) { $('createForm').innerHTML = ''; return; }
+
+  const d = await api(`/api/table/${table}?per_page=0`);
+  const skip = new Set(['id','created_at','updated_at','full_name','custom_fields','zoho_created_time','zoho_modified_time','zoho_created_by','zoho_modified_by','sync_status','sync_version','last_sync_at','deleted_at']);
+  const cols = d.columns.filter(c => !skip.has(c.name));
+
+  let html = '<div class="form-row">';
+  cols.forEach((c, i) => {
+    const type = c.type.includes('int') || c.type.includes('numeric') || c.type.includes('decimal') ? 'number' :
+                 c.type.includes('date') || c.type.includes('timestamp') ? 'datetime-local' : 'text';
+    html += `<div class="form-group">
+      <label class="form-label">${c.name}${c.nullable?'':' <span style="color:var(--red)">*</span>'}</label>
+      <input class="form-input" id="create_${c.name}" name="${c.name}" type="${type}" placeholder="${c.name.replace(/_/g, ' ')}" />
+    </div>`;
+    if ((i + 1) % 2 === 0 && i < cols.length - 1) html += '</div><div class="form-row">';
+  });
+  html += '</div>';
+  $('createForm').innerHTML = html;
+}
+
+async function submitCreateForm() {
+  const table = $('createTable').value;
+  if (!table) return toast('Select a table first', 'error');
+  const inputs = $('createForm').querySelectorAll('input');
+  const data = {};
+  inputs.forEach(i => { if (i.value.trim()) data[i.name] = i.value.trim(); });
+  if (Object.keys(data).length === 0) return toast('Fill in at least one field', 'error');
+  try {
+    await api(`/api/record/${table}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data)
+    });
+    toast(`Record created in ${table}`, 'success');
+    loadCreateForm();
+  } catch (e) {}
+}
+
+// ============================================================
+// UPLOAD DATA
+// ============================================================
+const uploadArea = $('uploadArea');
+uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+uploadArea.addEventListener('drop', e => { e.preventDefault(); uploadArea.classList.remove('dragover');
+  if (e.dataTransfer.files.length) { $('uploadFile').files = e.dataTransfer.files; handleFileSelect($('uploadFile')); }
+});
+
+async function handleFileSelect(input) {
+  if (!input.files.length) return;
+  const table = $('uploadTable').value;
+  const newTableName = $('uploadNewTableName').value.trim();
+  if (!table && !newTableName) return toast('Select a target table or enter a new table name', 'error');
+  uploadedFile = input.files[0];
+  const fd = new FormData();
+  fd.append('file', uploadedFile);
+  fd.append('table_name', table);
+  if (newTableName) {
+    fd.append('create_new_table', 'true');
+    fd.append('new_table_name', newTableName);
+  }
+
+  try {
+    const d = await api('/api/upload/preview', {method:'POST', body: fd});
+    $('uploadRowCount').textContent = d.total_rows_estimated ? `~${d.total_rows.toLocaleString()} rows (estimated)` : `${d.total_rows.toLocaleString()} rows`;
+    uploadMapping = {...d.suggested_mapping};
+
+    let mapHtml = '<div class="data-table-wrap"><table><thead><tr><th>File Column</th><th></th><th>Database Column</th><th>Status</th></tr></thead><tbody>';
+    d.excel_columns.forEach(ec => {
+      const suggested = d.suggested_mapping[ec] || '';
+      mapHtml += `<tr>
+        <td style="font-weight:500">${ec}</td>
+        <td style="text-align:center;color:var(--text3)">→</td>
+        <td><select class="form-select" data-excel="${ec}" onchange="uploadMapping[this.dataset.excel]=this.value" style="font-size:12px">
+          <option value="">— Skip —</option>
+          ${d.table_columns.map(tc => `<option value="${tc}" ${tc===suggested?'selected':''}>${tc}</option>`).join('')}
+        </select></td>
+        <td>${suggested ? '<span class="badge badge-synced">Matched</span>' : '<span class="badge" style="background:var(--bg3);color:var(--text3)">Unmapped</span>'}</td>
+      </tr>`;
+    });
+    mapHtml += '</tbody></table></div>';
+    $('uploadMappingArea').innerHTML = mapHtml;
+
+    let previewHtml = '<table><thead><tr>' + d.excel_columns.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+    d.preview.slice(0, 5).forEach(row => {
+      previewHtml += '<tr>' + d.excel_columns.map(c => `<td>${truncate(row[c], 35)}</td>`).join('') + '</tr>';
+    });
+    previewHtml += '</tbody></table>';
+    $('uploadSampleTable').innerHTML = previewHtml;
+    $('uploadPreview').style.display = 'block';
+    $('uploadResult').style.display = 'none';
+  } catch (e) {}
+}
+
+async function executeImport() {
+  const table = $('uploadTable').value;
+  const newTableName = $('uploadNewTableName').value.trim();
+  if (!uploadedFile || (!table && !newTableName)) return;
+  const fd = new FormData();
+  fd.append('file', uploadedFile);
+  fd.append('table_name', table);
+  fd.append('column_mapping', JSON.stringify(uploadMapping));
+  if (newTableName) {
+    fd.append('create_new_table', 'true');
+    fd.append('new_table_name', newTableName);
+  }
+
+  // Show progress area
+  $('uploadResult').style.display = 'block';
+  $('uploadResult').innerHTML = `
+    <div class="section-box">
+      <h3>Uploading...</h3>
+      <div id="uploadProgress" style="color:var(--text2);font-size:13px">Sending file to server...</div>
+    </div>`;
+
+  try {
+    const r = await api('/api/upload/import', {method:'POST', body: fd});
+    if (r.background && r.job_id) {
+      // Background job — poll for progress
+      toast('Upload started in background', 'success');
+      pollUploadJob(r.job_id, table);
+    } else if (r.success) {
+      showUploadComplete(r, table);
+    }
+  } catch (e) {
+    $('uploadResult').innerHTML = `<div class="section-box" style="border-color:var(--red)"><h3 style="color:var(--red)">Upload Failed</h3><p>${e.message||e}</p></div>`;
+  }
+}
+
+function pollUploadJob(jobId, table) {
+  const poll = async () => {
+    try {
+      const r = await fetch(`/api/upload/status/${jobId}`);
+      const d = await r.json();
+      const prog = $('uploadProgress');
+      if (!prog) return;
+
+      if (d.status === 'running' || d.status === 'queued') {
+        prog.innerHTML = `
+          <div style="margin-bottom:8px"><strong>Status:</strong> ${d.status} | <strong>Chunks:</strong> ${d.chunks_done || 0} | <strong>Rows inserted:</strong> ${(d.imported||0).toLocaleString()}</div>
+          <div style="background:var(--bg);border-radius:4px;height:8px;overflow:hidden">
+            <div style="background:var(--accent);height:100%;width:${d.total_rows ? Math.min(100, (d.imported/d.total_rows)*100) : 50}%;transition:width 0.5s"></div>
+          </div>
+          ${d.errors_count ? `<div style="color:var(--yellow);margin-top:4px">${d.errors_count} errors</div>` : ''}`;
+        setTimeout(poll, 2000);
+      } else if (d.status === 'completed') {
+        showUploadComplete({imported: d.imported, updated: 0, errors: d.errors || [], total: d.imported, table: d.table}, d.table || table);
+        $('uploadPreview').style.display = 'none';
+      } else if (d.status === 'error') {
+        $('uploadResult').innerHTML = `<div class="section-box" style="border-color:var(--red)"><h3 style="color:var(--red)">Upload Failed</h3><p>${d.error}</p></div>`;
+      }
+    } catch(e) {
+      setTimeout(poll, 3000);
+    }
+  };
+  setTimeout(poll, 1500);
+}
+
+function showUploadComplete(r, table) {
+  $('uploadResult').style.display = 'block';
+  $('uploadResult').innerHTML = `
+    <div class="section-box" style="border-color:var(--green)">
+      <h3 style="color:var(--green)">Import Complete</h3>
+      <div class="cards" style="margin-top:12px">
+        <div class="card"><div class="card-label">Imported</div><div class="card-value" style="color:var(--green)">${(r.imported||0).toLocaleString()}</div></div>
+        <div class="card"><div class="card-label">Updated</div><div class="card-value" style="color:var(--blue)">${(r.updated||0).toLocaleString()}</div></div>
+        <div class="card"><div class="card-label">Errors</div><div class="card-value" style="color:var(--red)">${r.errors?.length||0}</div></div>
+        <div class="card"><div class="card-label">Total Rows</div><div class="card-value">${(r.total||0).toLocaleString()}</div></div>
+      </div>
+      ${r.errors?.length ? '<div style="margin-top:12px;color:var(--red);font-size:12px;max-height:150px;overflow-y:auto">' + r.errors.slice(0,20).map(e => `<div>Row ${e.row}: ${e.error}</div>`).join('') + '</div>' : ''}
+    </div>`;
+  toast(`Imported ${(r.imported||0).toLocaleString()} records into ${table}`, 'success');
+  $('uploadPreview').style.display = 'none';
+}
+
+function resetUpload() {
+  $('uploadPreview').style.display = 'none';
+  $('uploadResult').style.display = 'none';
+  $('uploadFile').value = '';
+  uploadedFile = null;
+  uploadMapping = {};
+}
+
+// ============================================================
+// ENRICH & DEDUPLICATE
+// ============================================================
+async function loadEnrichData() {
+  const table = $('enrichTable').value;
+  if (!table) return;
+  $('enrichContent').innerHTML = '<p style="color:var(--text3)">Analyzing data quality...</p>';
+
+  try {
+    const [completeness, duplicates, validation] = await Promise.all([
+      api(`/api/enrich/completeness/${table}`),
+      api(`/api/enrich/duplicates/${table}`),
+      api(`/api/enrich/validate/${table}`)
+    ]);
+
+    let html = '';
+
+    // Field Completeness
+    html += `<div class="enrich-section"><h3>Field Completeness <span class="count-badge">${completeness.total} records</span></h3>`;
+    if (completeness.fields.length === 0) {
+      html += '<p style="color:var(--text3)">No fields to analyze</p>';
+    } else {
+      completeness.fields.forEach(f => {
+        const color = f.completeness >= 80 ? 'var(--green)' : f.completeness >= 50 ? 'var(--orange)' : 'var(--red)';
+        html += `<div class="completeness-bar">
+          <span class="field-name">${f.field}</span>
+          <div class="bar"><div class="bar-fill" style="width:${f.completeness}%;background:${color}"></div></div>
+          <span class="pct" style="color:${color}">${f.completeness}%</span>
+        </div>`;
+      });
+    }
+    html += '</div>';
+
+    // Duplicates
+    html += `<div class="enrich-section"><h3>Duplicates <span class="count-badge">${duplicates.total} groups</span></h3>`;
+    if (duplicates.duplicates.length === 0) {
+      html += '<p style="color:var(--green)">No duplicates detected</p>';
+    } else {
+      html += '<div class="data-table-wrap"><table><thead><tr><th>Field</th><th>Value</th><th>Count</th><th>Action</th></tr></thead><tbody>';
+      duplicates.duplicates.forEach(d => {
+        const idsStr = (d.ids||[]).join(',');
+        html += `<tr>
+          <td><span class="badge" style="background:var(--bg3);color:var(--text2)">${d.field}</span></td>
+          <td style="font-weight:500">${truncate(d.value, 40)}</td>
+          <td><span class="badge badge-error">${d.count}</span></td>
+          <td class="btn-group">
+            <button class="btn btn-xs btn-primary" onclick="openMergeModal('${table}','${idsStr}')">Merge</button>
+            <button class="btn btn-xs btn-secondary" onclick="browseDuplicates('${table}','${d.value.replace(/'/g,"\\'")}')">View</button>
+          </td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+
+    // Validation Issues
+    html += `<div class="enrich-section"><h3>Data Quality Issues <span class="count-badge">${validation.total} issues</span></h3>`;
+    if (validation.issues.length === 0) {
+      html += '<p style="color:var(--green)">No issues found</p>';
+    } else {
+      html += '<div class="data-table-wrap"><table><thead><tr><th>Type</th><th>Field</th><th>Details</th><th>ID</th></tr></thead><tbody>';
+      validation.issues.forEach(i => {
+        const label = i.type.replace(/_/g, ' ');
+        const badgeClass = i.type === 'invalid_email' ? 'badge-error' : i.type === 'missing_required' ? 'badge-pending' : 'badge-modified';
+        html += `<tr>
+          <td><span class="badge ${badgeClass}">${label}</span></td>
+          <td>${i.field}</td>
+          <td>${i.value || i.message || (i.count + ' records')}</td>
+          <td>${i.id ? `<button class="btn btn-xs btn-secondary" onclick="openEdit('${table}','${i.id}')">Fix</button>` : '—'}</td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+
+    $('enrichContent').innerHTML = html;
+  } catch (e) {
+    $('enrichContent').innerHTML = `<div class="section-box" style="border-color:var(--red)"><p style="color:var(--red)">Error: ${e.message}</p></div>`;
+  }
+}
+
+function browseDuplicates(table, value) {
+  $('browseTable').value = table;
+  $('browseSearch').value = value;
+  currentTable = table;
+  currentPage = 1;
+  document.querySelectorAll('.tab')[1].click();
+  loadTableData();
+}
+
+async function loadFuzzyDuplicates() {
+  const table = $('enrichTable').value;
+  if (!table) { showToast('Select a table first','warning'); return; }
+  $('enrichContent').innerHTML = '<p style="color:var(--text3)">Running fuzzy matching (this may take a moment for large tables)...</p>';
+  try {
+    const data = await api(`/api/enrich/fuzzy-duplicates/${table}?threshold=0.6`);
+    let html = `<div class="enrich-section"><h3>Fuzzy Duplicates <span class="count-badge">${data.total} matches</span></h3>`;
+    html += `<p style="color:var(--text3);font-size:12px;margin-bottom:12px">Threshold: ${data.threshold} | pg_trgm: ${data.has_trgm ? 'active' : 'not available'}</p>`;
+    if (data.fuzzy_duplicates.length === 0) {
+      html += '<p style="color:var(--green)">No fuzzy duplicates found</p>';
+    } else {
+      html += '<div class="data-table-wrap"><table><thead><tr><th>Type</th><th>Match</th><th>Similarity</th><th>Count</th><th>Action</th></tr></thead><tbody>';
+      data.fuzzy_duplicates.forEach(d => {
+        const sim = d.similarity ? `<span class="badge" style="background:${d.similarity > 0.8 ? 'var(--red)' : 'var(--orange)'};color:#fff">${(d.similarity*100).toFixed(0)}%</span>` : '—';
+        const typeLabel = d.type.replace(/_/g, ' ');
+        const ids = (d.ids||[]).join(',');
+        html += `<tr>
+          <td><span class="badge" style="background:var(--bg3);color:var(--text2)">${typeLabel}</span></td>
+          <td style="font-weight:500;max-width:300px;overflow:hidden;text-overflow:ellipsis">${truncate(d.value,60)}</td>
+          <td>${sim}</td>
+          <td>${d.count}</td>
+          <td><button class="btn btn-xs btn-primary" onclick="openMergeModal('${table}','${ids}')">Merge</button></td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+    $('enrichContent').innerHTML = html;
+  } catch (e) {
+    $('enrichContent').innerHTML = `<div class="section-box" style="border-color:var(--red)"><p style="color:var(--red)">Error: ${e.message}</p></div>`;
+  }
+}
+
+async function loadCrossModuleDuplicates() {
+  $('enrichContent').innerHTML = '<p style="color:var(--text3)">Checking for cross-module duplicates...</p>';
+  try {
+    const data = await api('/api/enrich/cross-module-duplicates');
+    let html = `<div class="enrich-section"><h3>Cross-Module Duplicates <span class="count-badge">${data.total} matches</span></h3>`;
+    html += '<p style="color:var(--text3);font-size:12px;margin-bottom:12px">Records appearing in multiple CRM modules (leads, contacts, accounts)</p>';
+    if (data.cross_duplicates.length === 0) {
+      html += '<p style="color:var(--green)">No cross-module duplicates found</p>';
+    } else {
+      html += '<div class="data-table-wrap"><table><thead><tr><th>Match Field</th><th>Value</th><th>Source</th><th>Target</th><th>Action</th></tr></thead><tbody>';
+      data.cross_duplicates.forEach(d => {
+        html += `<tr>
+          <td><span class="badge" style="background:var(--bg3);color:var(--text2)">${d.field}</span></td>
+          <td style="font-weight:500">${truncate(d.value,40)}</td>
+          <td><span class="badge badge-synced">${d.source_table}</span></td>
+          <td><span class="badge badge-modified">${d.target_table}</span></td>
+          <td class="btn-group">
+            <button class="btn btn-xs btn-secondary" onclick="browseRecord('${d.source_table}','${d.source_id}')">View Source</button>
+            <button class="btn btn-xs btn-secondary" onclick="browseRecord('${d.target_table}','${d.target_id}')">View Target</button>
+          </td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+    $('enrichContent').innerHTML = html;
+  } catch (e) {
+    $('enrichContent').innerHTML = `<div class="section-box" style="border-color:var(--red)"><p style="color:var(--red)">Error: ${e.message}</p></div>`;
+  }
+}
+
+async function loadRecentChanges() {
+  const table = $('enrichTable').value;
+  $('enrichContent').innerHTML = '<p style="color:var(--text3)">Loading change log...</p>';
+  try {
+    const url = table ? `/api/changes/recent?table=${table}&limit=100` : '/api/changes/recent?limit=100';
+    const data = await api(url);
+    let html = `<div class="enrich-section"><h3>Change Log <span class="count-badge">${data.total} changes</span></h3>`;
+    if (table) html += `<p style="color:var(--text3);font-size:12px;margin-bottom:12px">Filtered by: ${table}</p>`;
+    if (data.changes.length === 0) {
+      html += '<p style="color:var(--text3)">No changes recorded yet. Edit records via the Data Browser to start tracking changes.</p>';
+    } else {
+      html += '<div class="data-table-wrap"><table><thead><tr><th>Time</th><th>Table</th><th>Type</th><th>Source</th><th>Changes</th><th>Action</th></tr></thead><tbody>';
+      data.changes.forEach(c => {
+        const time = new Date(c.detected_at).toLocaleString();
+        const oldVals = typeof c.old_values === 'string' ? JSON.parse(c.old_values) : (c.old_values||{});
+        const newVals = typeof c.new_values === 'string' ? JSON.parse(c.new_values) : (c.new_values||{});
+        const fields = Object.keys(newVals).join(', ');
+        html += `<tr>
+          <td style="font-size:11px;white-space:nowrap">${time}</td>
+          <td><span class="badge" style="background:var(--bg3);color:var(--text2)">${c.table_name}</span></td>
+          <td>${c.change_type}</td>
+          <td>${c.change_source}</td>
+          <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;font-size:12px">${truncate(fields,50)}</td>
+          <td><button class="btn btn-xs btn-secondary" onclick="browseRecord('${c.table_name}','${c.record_id}')">View</button></td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+    $('enrichContent').innerHTML = html;
+  } catch (e) {
+    $('enrichContent').innerHTML = `<div class="section-box" style="border-color:var(--red)"><p style="color:var(--red)">Error: ${e.message}</p></div>`;
+  }
+}
+
+function browseRecord(table, id) {
+  $('browseTable').value = table;
+  $('browseSearch').value = id;
+  currentTable = table;
+  currentPage = 1;
+  document.querySelectorAll('.tab')[1].click();
+  loadTableData();
+}
+
+// ============================================================
+// MERGE MODAL
+// ============================================================
+async function openMergeModal(table, idsStr) {
+  mergeTable = table;
+  mergeIds = idsStr.split(',').filter(Boolean);
+  mergeKeeperId = null;
+
+  try {
+    const d = await api(`/api/enrich/duplicates/${table}/detail?ids=${idsStr}`);
+    const skip = new Set(['id','custom_fields','sync_version','deleted_at','zoho_created_time','zoho_modified_time','zoho_created_by','zoho_modified_by']);
+    const displayCols = d.columns.filter(c => !skip.has(c.name)).slice(0, 12);
+
+    $('mergeRecords').innerHTML = d.records.map(rec => {
+      const rid = rec[d.primary_key];
+      return `<div class="merge-record-card" data-id="${rid}" onclick="selectKeeper('${rid}')">
+        <div style="margin-bottom:8px;font-weight:600;font-size:13px">
+          ${rec.first_name||''} ${rec.last_name||rec.account_name||rec.deal_name||rec.subject||'Record'}
+          <span style="font-size:11px;color:var(--text3)">#${String(rid).slice(0,8)}</span>
+        </div>
+        ${displayCols.map(c => {
+          const v = rec[c.name];
+          if (!v && v !== 0) return '';
+          return `<div class="field-row"><span class="label">${c.name}</span><span class="value">${truncate(v, 30)}</span></div>`;
+        }).filter(Boolean).join('')}
+      </div>`;
+    }).join('');
+
+    $('btnMerge').disabled = true;
+    $('btnMerge').textContent = 'Select a record to keep';
+    $('mergeModal').classList.add('active');
+  } catch (e) {}
+}
+
+function selectKeeper(id) {
+  mergeKeeperId = id;
+  document.querySelectorAll('.merge-record-card').forEach(el => {
+    el.classList.toggle('keeper', el.dataset.id === id);
+  });
+  const mergeCount = mergeIds.filter(mid => mid !== id).length;
+  $('btnMerge').disabled = false;
+  $('btnMerge').textContent = `Merge ${mergeCount} record${mergeCount>1?'s':''} into keeper`;
+}
+
+async function executeMerge() {
+  if (!mergeKeeperId) return;
+  const toMerge = mergeIds.filter(id => id !== mergeKeeperId);
+  if (!confirm(`Merge ${toMerge.length} record(s) into the keeper? This cannot be undone.`)) return;
+
+  try {
+    await api('/api/enrich/merge', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ table: mergeTable, keep_id: mergeKeeperId, merge_ids: toMerge })
+    });
+    toast(`Merged ${toMerge.length} records`, 'success');
+    closeModal('mergeModal');
+    loadEnrichData();
+  } catch (e) {}
+}
+
+// ============================================================
+// SYNC CONTROL
+// ============================================================
+// ============================================================
+// SQL QUERY
+// ============================================================
+async function runSQL() {
+  const sql = $('sqlInput').value.trim();
+  if (!sql) return toast('Enter a SQL query', 'warning');
+  $('sqlTimer').textContent = 'Running...';
+  const start = Date.now();
+  try {
+    const d = await api('/api/query', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({sql, limit: 500})
+    });
+    const ms = Date.now() - start;
+    $('sqlTimer').textContent = `${ms}ms · ${d.count} rows${d.truncated ? ' (truncated)' : ''}`;
+    $('sqlResultCount').textContent = `${d.count} rows`;
+    $('sqlResultArea').style.display = 'block';
+
+    if (!d.columns || !d.columns.length) {
+      $('sqlResultTable').innerHTML = '<p style="color:var(--text3);padding:16px">No results</p>';
+      return;
+    }
+    let html = '<table><thead><tr>' + d.columns.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+    d.data.forEach(row => {
+      html += '<tr>' + d.columns.map(c => `<td title="${truncate(row[c],300)}">${truncate(row[c],60)}</td>`).join('') + '</tr>';
+    });
+    html += '</tbody></table>';
+    $('sqlResultTable').innerHTML = html;
+  } catch (e) {
+    $('sqlTimer').textContent = 'Error';
+    $('sqlResultArea').style.display = 'block';
+    $('sqlResultTable').innerHTML = `<p style="color:var(--red);padding:16px">${e.message}</p>`;
+  }
+}
+
+function quickSQL(sql) {
+  $('sqlInput').value = sql;
+  runSQL();
+}
+
+// Ctrl+Enter to run SQL
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && document.activeElement === $('sqlInput')) {
+    e.preventDefault();
+    runSQL();
+  }
+});
+
+// ============================================================
+// TABLE MANAGER
+// ============================================================
+async function loadTablesPanel() {
+  try {
+    const d = await api('/api/tables');
+    const tables = d.tables || [];
+    $('tableCount').textContent = tables.length;
+
+    // Populate alter table select
+    const sel = $('alterTableSelect');
+    sel.innerHTML = '<option value="">Select table...</option>' +
+      tables.map(t => `<option value="${t.name}">${t.name} (${t.rows} rows)</option>`).join('');
+
+    $('allTablesBody').innerHTML = tables.map(t => `
+      <tr>
+        <td><strong>${t.name}</strong>${t.module ? ` <span style="color:var(--text3);font-size:11px">(${t.module})</span>` : ''}</td>
+        <td>${(t.rows||0).toLocaleString()}</td>
+        <td>${t.columns}</td>
+        <td>${t.is_crm ? '<span class="badge badge-synced">CRM</span>' : '<span class="badge" style="background:var(--bg3);color:var(--text2)">Custom</span>'}</td>
+        <td>
+          <button class="btn btn-xs btn-secondary" onclick="browseTo('${t.name}')">Browse</button>
+          ${!t.is_crm ? `<button class="btn btn-xs btn-warning" onclick="truncateTable('${t.name}')">Truncate</button>
+          <button class="btn btn-xs btn-danger" onclick="dropTable('${t.name}')">Drop</button>` : ''}
+        </td>
+      </tr>
+    `).join('');
+  } catch (e) {}
+}
+
+function addColumnRow() {
+  const container = $('newTableColumns');
+  const row = document.createElement('div');
+  row.className = 'new-col-row';
+  row.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 30px;gap:6px;margin-bottom:6px';
+  row.innerHTML = `
+    <input class="form-input" placeholder="column_name" />
+    <select class="form-select">
+      <option value="TEXT">TEXT</option><option value="VARCHAR(255)">VARCHAR(255)</option>
+      <option value="INTEGER">INTEGER</option><option value="BIGINT">BIGINT</option>
+      <option value="NUMERIC">NUMERIC</option><option value="BOOLEAN">BOOLEAN</option>
+      <option value="TIMESTAMP WITH TIME ZONE">TIMESTAMP</option><option value="DATE">DATE</option>
+      <option value="JSONB">JSONB</option>
+    </select>
+    <button class="btn btn-xs btn-danger" onclick="this.parentElement.remove()" style="height:34px">×</button>
+  `;
+  container.appendChild(row);
+}
+
+async function createTable() {
+  const name = $('newTableName').value.trim();
+  if (!name) return toast('Enter a table name', 'warning');
+  const rows = document.querySelectorAll('#newTableColumns .new-col-row');
+  const columns = [];
+  rows.forEach(r => {
+    const cname = r.querySelector('input').value.trim();
+    const ctype = r.querySelector('select').value;
+    if (cname) columns.push({name: cname, type: ctype});
+  });
+  if (!columns.length) return toast('Add at least one column', 'warning');
+  try {
+    await api('/api/tables/create', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name, columns})
+    });
+    toast(`Table '${name}' created`, 'success');
+    loadTablesPanel();
+    loadDashboard();
+  } catch (e) {}
+}
+
+async function addColumn() {
+  const table = $('alterTableSelect').value;
+  const name = $('alterColName').value.trim();
+  const type = $('alterColType').value;
+  if (!table || !name) return toast('Select table and enter column name', 'warning');
+  try {
+    await api(`/api/tables/${table}/columns`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name, type})
+    });
+    toast(`Column '${name}' added to '${table}'`, 'success');
+    $('alterColName').value = '';
+    loadTablesPanel();
+  } catch (e) {}
+}
+
+async function truncateTable(name) {
+  if (!confirm(`Truncate table '${name}'? This will remove ALL rows.`)) return;
+  try {
+    await api(`/api/tables/${name}/truncate`, {method: 'POST', headers: {'Content-Type':'application/json'}});
+    toast(`Table '${name}' truncated`, 'success');
+    loadTablesPanel();
+    loadDashboard();
+  } catch (e) {}
+}
+
+async function dropTable(name) {
+  if (!confirm(`DROP table '${name}'? This CANNOT be undone!`)) return;
+  try {
+    await api(`/api/tables/${name}/drop`, {method: 'POST', headers: {'Content-Type':'application/json'}});
+    toast(`Table '${name}' dropped`, 'success');
+    loadTablesPanel();
+    loadDashboard();
+  } catch (e) {}
+}
+
+// ============================================================
+// SYNC CONTROL
+// ============================================================
+function loadSyncPanel() {
+  if (!dashData) return;
+  const modules = dashData.tables.map(t => ({module: t.module, table: t.table, count: t.count, pending: (t.pending||0) + (t.modified||0)}));
+
+  // Pull modules - show Sync Now button
+  $('pullModules').innerHTML = modules.map(m => `
+    <div class="module-card" data-module="${m.module}" onclick="if(event.target.tagName!=='BUTTON')this.classList.toggle('selected')">
+      <h4>${m.module}</h4>
+      <div class="meta">${(m.count||0).toLocaleString()} records</div>
+      <button class="btn btn-xs btn-primary sync-btn" onclick="event.stopPropagation();syncSingleModule('${m.module}')">Pull Now</button>
+    </div>
+  `).join('');
+  // Push modules - show pending count and Push button
+  $('pushModules').innerHTML = modules.map(m => `
+    <div class="module-card" data-module="${m.module}" onclick="if(event.target.tagName!=='BUTTON')this.classList.toggle('selected')">
+      <h4>${m.module}</h4>
+      <div class="meta">${(m.count||0).toLocaleString()} records${m.pending > 0 ? ` · <span style="color:var(--orange)">${m.pending} pending</span>` : ' · <span style="color:var(--text3)">0 pending</span>'}</div>
+      <button class="btn btn-xs btn-success sync-btn" onclick="event.stopPropagation();pushModule('${m.module}')"${m.pending > 0 ? '' : ' disabled'}>Push to Zoho</button>
+    </div>
+  `).join('');
+  pollSyncStatus();
+  loadAutoSyncSettings();
+  loadSyncHistory();
+}
+
+function getSelectedModules(prefix) {
+  return Array.from(document.querySelectorAll(`#${prefix}Modules .module-card.selected`)).map(c => c.dataset.module);
+}
+
+async function syncSingleModule(moduleName) {
+  try {
+    await api(`/api/sync/module/${moduleName}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}
+    });
+    toast(`Syncing ${moduleName}...`, 'info');
+    if (!syncPollInterval) syncPollInterval = setInterval(pollSyncStatus, 2000);
+  } catch (e) {}
+}
+
+async function startSync(direction, modules) {
+  const body = {};
+  if (modules && modules.length) body.modules = modules;
+  try {
+    await api(`/api/sync/${direction}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    toast(`${direction.charAt(0).toUpperCase() + direction.slice(1)} sync started`, 'info');
+    if (!syncPollInterval) syncPollInterval = setInterval(pollSyncStatus, 2000);
+  } catch (e) {}
+}
+
+async function startImport(type) {
+  try {
+    await api(`/api/sync/${type}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}
+    });
+    toast(`${type.replace('-', ' ')} started (may take a while)`, 'info');
+    if (!syncPollInterval) syncPollInterval = setInterval(pollSyncStatus, 2000);
+  } catch (e) {}
+}
+
+async function pushModule(moduleName) {
+  try {
+    await api(`/api/sync/push-module/${moduleName}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}
+    });
+    toast(`Pushing ${moduleName} to Zoho...`, 'info');
+    if (!syncPollInterval) syncPollInterval = setInterval(pollSyncStatus, 2000);
+  } catch (e) {}
+}
+
+async function loadPushPreview() {
+  try {
+    $('pushPreviewArea').style.display = 'block';
+    $('pushPreviewContent').innerHTML = '<p style="color:var(--text3)">Loading preview...</p>';
+    const d = await api('/api/sync/push-preview', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({statuses: ['pending', 'modified'], limit: 3})
+    });
+    if (!d.preview || d.preview.length === 0) {
+      $('pushPreviewContent').innerHTML = '<p style="color:var(--text3)">No records to push (no pending/modified records found)</p>';
+      return;
+    }
+    let html = `<div style="margin-bottom:8px;font-weight:600;color:var(--accent2)">Total: ${d.total_records} records across ${d.preview.length} modules</div>`;
+    d.preview.forEach(p => {
+      html += `<div style="margin-bottom:10px;padding:8px;background:var(--bg2);border-radius:4px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <strong>${p.module}</strong>
+          <span style="color:var(--text2);font-size:12px">${p.total_records} records (${p.updates} updates, ${p.creates} creates)</span>
+          <button class="btn btn-xs btn-success" onclick="pushModule('${p.module}')">Push This Module</button>
+        </div>`;
+      if (p.samples && p.samples.length > 0) {
+        html += '<div style="font-size:11px;color:var(--text3)">';
+        p.samples.forEach(s => {
+          const fields = Object.keys(s.zoho_fields).slice(0, 4).join(', ');
+          html += `<div style="padding:2px 0">${s.action === 'update' ? '✏' : '+'} ${s.zoho_id || 'NEW'}: ${s.field_count} fields (${fields}...)</div>`;
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+    });
+    $('pushPreviewContent').innerHTML = html;
+  } catch (e) {
+    $('pushPreviewContent').innerHTML = `<p style="color:var(--red)">${e.message}</p>`;
+  }
+}
+
+async function resetSync() {
+  try {
+    await api('/api/sync/reset', {method: 'POST', headers: {'Content-Type':'application/json'}});
+    toast('Sync state reset', 'success');
+    pollSyncStatus();
+  } catch (e) {}
+}
+
+async function loadAutoSyncSettings() {
+  try {
+    const s = await api('/api/sync/auto');
+    $('autoSyncArea').innerHTML = `
+      <div class="auto-sync-stat"><span>Status</span><strong style="color:${s.enabled?'var(--green)':'var(--red)'}"> ${s.enabled?'Enabled':'Disabled'}</strong></div>
+      <div class="auto-sync-stat"><span>Interval</span><strong>${s.interval_minutes} min</strong></div>
+      <div class="auto-sync-stat"><span>Last Run</span><span>${shortDate(s.last_run)}</span></div>
+      <div class="auto-sync-stat"><span>Next Run</span><span>${shortDate(s.next_run)}</span></div>
+      <div class="auto-sync-stat"><span>Runs</span><span>${s.run_count||0}</span></div>
+      <div class="btn-group" style="margin-top:10px">
+        <button class="btn btn-sm ${s.enabled?'btn-danger':'btn-success'}" onclick="toggleAutoSync(${!s.enabled})">${s.enabled?'Disable':'Enable'} Auto-Sync</button>
+      </div>
+    `;
+  } catch (e) { $('autoSyncArea').innerHTML = '<p style="color:var(--red)">Failed to load</p>'; }
+}
+
+async function toggleAutoSync(enable) {
+  try {
+    await api('/api/sync/auto', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: enable})
+    });
+    toast(`Auto-sync ${enable?'enabled':'disabled'}`, 'success');
+    loadAutoSyncSettings();
+  } catch (e) {}
+}
+
+async function loadSyncHistory() {
+  try {
+    const d = await api('/api/sync/history?limit=20');
+    const jobs = d.jobs || [];
+    $('syncHistoryCount').textContent = jobs.length;
+    $('syncHistoryBody').innerHTML = jobs.map(j => `
+      <tr>
+        <td><strong>${j.job_type||'—'}</strong></td>
+        <td>${badgeFor(j.status)}</td>
+        <td>${(j.total_records||0).toLocaleString()}</td>
+        <td style="color:var(--green)">${j.created_records||0}</td>
+        <td style="color:var(--blue)">${j.updated_records||0}</td>
+        <td style="color:var(--red)">${j.failed_records||0}</td>
+        <td>${j.duration_seconds ? j.duration_seconds + 's' : '—'}</td>
+        <td style="font-size:11px;color:var(--text3)">${shortDate(j.started_at)}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="8" style="color:var(--text3);text-align:center;padding:16px">No sync history</td></tr>';
+  } catch (e) {}
+}
+
+async function pollSyncStatus() {
+  try {
+    const s = await api('/api/sync/status');
+    let html = '';
+
+    if (s.running) {
+      html += `<div style="margin-bottom:10px">
+        <strong style="color:var(--accent2)">${(s.direction||'SYNC').toUpperCase()} in progress</strong>
+        <span style="color:var(--text2);margin-left:12px;font-size:13px">${s.message||''}</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" style="width:${s.progress||0}%"></div></div>
+      <p style="margin-top:6px;font-size:11px;color:var(--text3)">Module: ${s.module||'—'} · Started: ${shortDate(s.started_at)}</p>`;
+      setSyncButtons(true);
+    } else {
+      setSyncButtons(false);
+      if (s.completed_at) {
+        html += `<p style="color:var(--green);margin-bottom:8px;font-size:13px">Last sync completed: ${shortDate(s.completed_at)}</p>`;
+        if (s.results) {
+          html += '<div class="sync-log">';
+          const renderResults = (label, results) => {
+            if (!results || typeof results !== 'object') return;
+            html += `<div style="margin-bottom:4px"><strong>${label}</strong></div>`;
+            Object.entries(results).forEach(([mod, stats]) => {
+              if (typeof stats !== 'object') return;
+              const parts = [];
+              if (stats.created) parts.push(`${stats.created} created`);
+              if (stats.updated) parts.push(`${stats.updated} updated`);
+              if (stats.success) parts.push(`${stats.success} success`);
+              if (stats.failed) parts.push(`<span style="color:var(--red)">${stats.failed} failed</span>`);
+              if (stats.errors) parts.push(`<span style="color:var(--red)">${stats.errors} errors</span>`);
+              if (stats.total !== undefined) parts.push(`${stats.total} total`);
+              html += `<div class="sync-log-entry">${mod}: ${parts.join(', ')}</div>`;
+            });
+          };
+          if (s.results.pull) renderResults('PULL Results:', s.results.pull);
+          if (s.results.push) renderResults('PUSH Results:', s.results.push);
+          if (!s.results.pull && !s.results.push) renderResults('Results:', s.results);
+          html += '</div>';
+        }
+        if (s.errors?.length) {
+          html += '<div style="margin-top:8px;color:var(--red);font-size:12px">' + s.errors.join('<br>') + '</div>';
+        }
+        if (syncPollInterval) { clearInterval(syncPollInterval); syncPollInterval = null; }
+      } else {
+        html = '<p style="color:var(--text3)">No sync in progress</p>';
+        if (syncPollInterval) { clearInterval(syncPollInterval); syncPollInterval = null; }
+      }
+    }
+    $('syncStatusArea').innerHTML = html;
+  } catch (e) {}
+}
+
+function setSyncButtons(disabled) {
+  ['btnPullAll','btnPullSelected','btnPushAll','btnPushSelected','btnFullSync','btnImportEmails','btnImportVisits'].forEach(id => {
+    if ($(id)) $(id).disabled = disabled;
+  });
+}
+
+// ============================================================
+// AI CHAT
+// ============================================================
+const chatSessionId = 'session_' + Date.now();
+
+async function checkChatStatus() {
+  try {
+    const r = await fetch('/api/chat/status');
+    const d = await r.json();
+    const badge = $('chatStatusBadge');
+    if (d.available) {
+      badge.textContent = 'online';
+      badge.style.background = 'var(--green-dim)';
+      badge.style.color = 'var(--green)';
+    } else {
+      badge.textContent = 'unavailable';
+      badge.style.background = 'var(--red-dim)';
+      badge.style.color = 'var(--red)';
+    }
+  } catch(e) {
+    const badge = $('chatStatusBadge');
+    badge.textContent = 'error';
+    badge.style.background = 'var(--red-dim)';
+    badge.style.color = 'var(--red)';
+  }
+}
+
+function appendChatMsg(role, content) {
+  const box = $('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg chat-' + role;
+  // Simple markdown-like formatting
+  let html = content
+    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>');
+  // Convert markdown tables
+  if (html.includes('|') && html.includes('---')) {
+    html = html.replace(/((?:\|[^\n<]+\|<br>)+)/g, function(tableBlock) {
+      const rows = tableBlock.split('<br>').filter(r => r.trim());
+      if (rows.length < 2) return tableBlock;
+      let t = '<table>';
+      rows.forEach((row, i) => {
+        if (row.includes('---')) return;
+        const cells = row.split('|').filter(c => c.trim());
+        const tag = i === 0 ? 'th' : 'td';
+        t += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+      });
+      t += '</table>';
+      return t;
+    });
+  }
+  div.innerHTML = html;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function showChatLoading() {
+  const box = $('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg chat-ai';
+  div.id = 'chatLoading';
+  div.innerHTML = '<span class="chat-loading"></span><span class="chat-loading"></span><span class="chat-loading"></span>';
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function removeChatLoading() {
+  const el = $('chatLoading');
+  if (el) el.remove();
+}
+
+async function sendChat() {
+  const input = $('chatInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  appendChatMsg('user', msg);
+  showChatLoading();
+  $('btnSendChat').disabled = true;
+
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ message: msg, session_id: chatSessionId })
+    });
+    removeChatLoading();
+    const d = await r.json();
+    if (d.error) {
+      appendChatMsg('system', 'Error: ' + d.error);
+    } else {
+      if (d.tools_used && d.tools_used.length > 0) {
+        appendChatMsg('tool', 'Tools used: ' + d.tools_used.join(', '));
+      }
+      appendChatMsg('ai', d.response);
+    }
+  } catch(e) {
+    removeChatLoading();
+    appendChatMsg('system', 'Network error: ' + e.message);
+  }
+  $('btnSendChat').disabled = false;
+  input.focus();
+}
+
+function sendQuickChat(msg) {
+  $('chatInput').value = msg;
+  sendChat();
+}
+
+async function resetChat() {
+  try {
+    await fetch('/api/chat/reset', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ session_id: chatSessionId })
+    });
+  } catch(e) {}
+  $('chatMessages').innerHTML = '<div class="chat-msg chat-system">Chat reset. Ask me anything about your CRM data.</div>';
+}
+
+// ============================================================
+// INIT
+// ============================================================
+loadDashboard();
+</script>
+</body>
+</html>
