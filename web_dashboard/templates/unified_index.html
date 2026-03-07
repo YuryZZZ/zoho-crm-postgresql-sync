@@ -376,7 +376,9 @@ textarea.form-input { min-height: 80px; resize: vertical; }
       <button class="btn btn-primary" onclick="loadEnrichData()">Analyze</button>
       <button class="btn btn-secondary" onclick="loadFuzzyDuplicates()">Fuzzy Match</button>
       <button class="btn btn-secondary" onclick="loadNormalizedDuplicates()">Smart Dedup</button>
+      <button class="btn btn-secondary" onclick="showCustomDedupForm()">Custom Dedup</button>
       <button class="btn btn-secondary" onclick="loadCrossModuleDuplicates()">Cross-Module</button>
+      <button class="btn btn-secondary" onclick="showEnrichmentPanel()">Enrichment</button>
       <button class="btn btn-secondary" onclick="loadRecentChanges()">Change Log</button>
     </div>
     <div id="enrichContent">
@@ -1478,6 +1480,329 @@ async function loadRecentChanges() {
     $('enrichContent').innerHTML = html;
   } catch (e) {
     $('enrichContent').innerHTML = `<div class="section-box" style="border-color:var(--red)"><p style="color:var(--red)">Error: ${e.message}</p></div>`;
+  }
+}
+
+// ============================================================
+// CUSTOM DEDUP (field-configurable)
+// ============================================================
+async function showCustomDedupForm() {
+  const table = $('enrichTable').value;
+  if (!table) { showToast('Select a table first','warning'); return; }
+
+  // Fetch columns for the selected table
+  try {
+    const tData = await api(`/api/tables`);
+    const cols = await api(`/api/query`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sql: `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='${table}' ORDER BY ordinal_position`})
+    });
+    const colNames = cols.rows.map(r => r.column_name);
+    const skipCols = new Set(['id','custom_fields','sync_version','deleted_at','zoho_created_time','zoho_modified_time','zoho_created_by','zoho_modified_by','full_name','created_at','updated_at','last_sync_at']);
+
+    let html = `<div class="section-box"><h3>Custom Dedup — Choose Fields</h3>
+      <p style="color:var(--text3);font-size:12px;margin-bottom:12px">Select fields to find duplicates on. Records matching on ALL selected fields will be grouped.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px" id="customDedupFields">`;
+    colNames.filter(c => !skipCols.has(c)).forEach(c => {
+      const checked = ['email','phone','company','account_name'].includes(c) ? 'checked' : '';
+      html += `<label style="display:flex;align-items:center;gap:4px;font-size:13px;padding:4px 8px;background:var(--bg3);border-radius:6px;cursor:pointer">
+        <input type="checkbox" class="dedup-field-cb" value="${c}" ${checked}> ${c}
+      </label>`;
+    });
+    html += `</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+        <label style="font-size:13px;color:var(--text2)">Mode:</label>
+        <select id="customDedupMode" class="form-select" style="width:150px">
+          <option value="exact">Exact Match</option>
+          <option value="normalized">Normalized</option>
+          <option value="fuzzy">Fuzzy (pg_trgm)</option>
+        </select>
+        <label style="font-size:13px;color:var(--text2);margin-left:12px">Cross-check against:</label>
+        <select id="customDedupCross" class="form-select" style="width:150px">
+          <option value="">None</option>`;
+    // Add all tables as cross-table options
+    (tData.tables||[]).forEach(t => {
+      if (t.name !== table) html += `<option value="${t.name}">${t.name}</option>`;
+    });
+    html += `</select>
+      </div>
+      <button class="btn btn-primary" onclick="runCustomDedup()">Find Duplicates</button>
+    </div>
+    <div id="customDedupResults"></div>`;
+    $('enrichContent').innerHTML = html;
+  } catch(e) {
+    $('enrichContent').innerHTML = `<div class="section-box" style="border-color:var(--red)"><p style="color:var(--red)">Error: ${e.message}</p></div>`;
+  }
+}
+
+async function runCustomDedup() {
+  const table = $('enrichTable').value;
+  const fields = [...document.querySelectorAll('.dedup-field-cb:checked')].map(cb => cb.value);
+  const mode = $('customDedupMode').value;
+  const crossTable = $('customDedupCross').value;
+
+  if (fields.length === 0) { showToast('Select at least one field','warning'); return; }
+
+  $('customDedupResults').innerHTML = '<p style="color:var(--text3)">Running dedup analysis...</p>';
+
+  try {
+    const body = { table, fields, mode, limit: 100 };
+    if (crossTable) {
+      body.cross_table = crossTable;
+      body.cross_fields = fields; // same fields in cross table
+    }
+    const data = await api('/api/enrich/custom-dedup', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+
+    let html = `<div class="section-box" style="margin-top:12px">
+      <h3>Results <span class="count-badge">${data.total} duplicate groups</span></h3>`;
+    if (data.duplicates.length === 0) {
+      html += '<p style="color:var(--green)">No duplicates found for the selected fields!</p>';
+    } else {
+      html += '<div class="data-table-wrap"><table><thead><tr><th>Type</th><th>Fields</th><th>Values</th><th>Count</th><th>Action</th></tr></thead><tbody>';
+      data.duplicates.forEach(d => {
+        const fieldStr = d.fields.join(', ');
+        let valStr = '';
+        Object.entries(d.field_values||{}).forEach(([f,vals]) => {
+          valStr += `<strong>${f}:</strong> ${(vals||[]).slice(0,3).join(', ')}`;
+          if (vals && vals.length > 3) valStr += `... (+${vals.length-3})`;
+          valStr += '<br>';
+        });
+        const sim = d.similarity ? ` (${d.similarity})` : '';
+        html += `<tr>
+          <td><span class="badge" style="background:var(--bg3);color:var(--text2)">${d.type}${sim}</span></td>
+          <td style="font-size:12px">${fieldStr}</td>
+          <td style="font-size:12px;max-width:300px">${valStr}</td>
+          <td>${d.count}</td>
+          <td><button class="btn btn-xs btn-primary" onclick="openMergeModal('${table}','${(d.ids||[]).join(',')}')">Merge</button></td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+
+    if (data.cross_total > 0) {
+      html += `<h3 style="margin-top:16px">Cross-Table Matches <span class="count-badge">${data.cross_total}</span></h3>`;
+      html += '<div class="data-table-wrap"><table><thead><tr><th>Source</th><th>Target</th><th>Matched Fields</th><th>Action</th></tr></thead><tbody>';
+      data.cross_matches.forEach(m => {
+        const mf = Object.entries(m.matched_fields||{}).map(([k,v]) => `${k}: ${v.source}`).join(', ');
+        html += `<tr>
+          <td><span class="badge badge-synced">${m.source_table}</span> #${String(m.source_id).slice(0,8)}</td>
+          <td><span class="badge badge-modified">${m.target_table}</span> #${String(m.target_id).slice(0,8)}</td>
+          <td style="font-size:12px">${mf}</td>
+          <td class="btn-group">
+            <button class="btn btn-xs btn-secondary" onclick="browseRecord('${m.source_table}','${m.source_id}')">Source</button>
+            <button class="btn btn-xs btn-secondary" onclick="browseRecord('${m.target_table}','${m.target_id}')">Target</button>
+          </td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+    $('customDedupResults').innerHTML = html;
+  } catch(e) {
+    $('customDedupResults').innerHTML = `<div class="section-box" style="border-color:var(--red)"><p style="color:var(--red)">Error: ${e.message}</p></div>`;
+  }
+}
+
+// ============================================================
+// ENRICHMENT PIPELINE
+// ============================================================
+async function showEnrichmentPanel() {
+  $('enrichContent').innerHTML = '<p style="color:var(--text3)">Loading enrichment tables...</p>';
+  try {
+    const data = await api('/api/enrichment/tables');
+    const allTables = await api('/api/tables');
+    const crmTables = (allTables.tables||[]).filter(t => t.is_crm).map(t => t.name);
+
+    let html = `<div class="section-box">
+      <h3>Enrichment Tables <span class="count-badge">${data.total} registered</span></h3>
+      <p style="color:var(--text3);font-size:12px;margin-bottom:12px">
+        Enrichment tables hold external data (purchased lists, research) that is NOT auto-synced to Zoho.
+        Upload data, run dedup checks against CRM, then push unique records on-demand.
+      </p>`;
+
+    if (data.enrichment_tables.length > 0) {
+      html += '<div class="data-table-wrap"><table><thead><tr><th>Table</th><th>Target CRM</th><th>Rows</th><th>Description</th><th>Actions</th></tr></thead><tbody>';
+      data.enrichment_tables.forEach(t => {
+        html += `<tr>
+          <td style="font-weight:600">${t.table_name}</td>
+          <td><span class="badge badge-synced">${t.target_crm_table||'—'}</span></td>
+          <td>${t.row_count||0}</td>
+          <td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${t.description||''}</td>
+          <td class="btn-group">
+            <button class="btn btn-xs btn-primary" onclick="runEnrichmentDedupCheck('${t.table_name}')">Dedup Check</button>
+            <button class="btn btn-xs btn-secondary" onclick="showEnrichmentSummary('${t.table_name}')">Summary</button>
+            <button class="btn btn-xs btn-secondary" onclick="syncEnrichmentToCRM('${t.table_name}')">Push Unique</button>
+            <button class="btn btn-xs btn-secondary" onclick="browseRecord('${t.table_name}','')">Browse</button>
+          </td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    } else {
+      html += '<p style="color:var(--text3)">No enrichment tables registered yet. Create one below.</p>';
+    }
+
+    // Create new enrichment table form
+    html += `</div>
+    <div class="section-box" style="margin-top:16px">
+      <h3>Register New Enrichment Table</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div>
+          <label style="font-size:12px;color:var(--text2)">Table Name</label>
+          <input type="text" id="newEnrichTable" class="form-input" placeholder="e.g. q1_leads_list" style="width:100%">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text2)">Target CRM Table</label>
+          <select id="newEnrichTarget" class="form-select" style="width:100%">
+            <option value="">Select CRM table...</option>`;
+    crmTables.forEach(t => html += `<option value="${t}">${t}</option>`);
+    html += `</select>
+        </div>
+        <div style="grid-column:1/-1">
+          <label style="font-size:12px;color:var(--text2)">Description</label>
+          <input type="text" id="newEnrichDesc" class="form-input" placeholder="e.g. Purchased lead list from DataProvider" style="width:100%">
+        </div>
+        <div style="grid-column:1/-1">
+          <label style="font-size:12px;color:var(--text2)">Field Mapping (enrichment_field:crm_field, comma-separated)</label>
+          <input type="text" id="newEnrichMapping" class="form-input" placeholder="e.g. company_name:company, contact_email:email, phone_number:phone" style="width:100%">
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--text3);margin-bottom:8px">
+        You can also upload data directly to this table using the Upload Data tab (select the table name there).
+        Columns will be auto-created from your CSV/Excel file.
+      </p>
+      <button class="btn btn-primary" onclick="createEnrichmentTable()">Create & Register</button>
+    </div>`;
+    $('enrichContent').innerHTML = html;
+  } catch(e) {
+    $('enrichContent').innerHTML = `<div class="section-box" style="border-color:var(--red)"><p style="color:var(--red)">Error: ${e.message}</p></div>`;
+  }
+}
+
+async function createEnrichmentTable() {
+  const tableName = $('newEnrichTable').value.trim();
+  const target = $('newEnrichTarget').value;
+  const desc = $('newEnrichDesc').value.trim();
+  const mappingStr = $('newEnrichMapping').value.trim();
+
+  if (!tableName) { showToast('Table name required','warning'); return; }
+  if (!target) { showToast('Target CRM table required','warning'); return; }
+
+  const fieldMapping = {};
+  if (mappingStr) {
+    mappingStr.split(',').forEach(pair => {
+      const [src, tgt] = pair.trim().split(':').map(s => s.trim());
+      if (src && tgt) fieldMapping[src] = tgt;
+    });
+  }
+
+  try {
+    // Get target CRM table columns to auto-create matching columns
+    const targetCols = await api(`/api/query`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sql: `SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='${target}' AND column_name NOT IN ('id','custom_fields','sync_version','deleted_at','full_name') ORDER BY ordinal_position`})
+    });
+
+    const columns = [];
+    const usedNames = new Set();
+    // Add columns from field mapping first
+    Object.keys(fieldMapping).forEach(src => {
+      if (!usedNames.has(src)) {
+        columns.push({name: src, type: 'TEXT'});
+        usedNames.add(src);
+      }
+    });
+    // Add some standard columns from CRM table if not already mapped
+    (targetCols.rows||[]).forEach(r => {
+      if (!usedNames.has(r.column_name) && columns.length < 20) {
+        let pgType = 'TEXT';
+        if (r.data_type.includes('integer')) pgType = 'INTEGER';
+        else if (r.data_type.includes('numeric')) pgType = 'NUMERIC';
+        else if (r.data_type.includes('timestamp')) pgType = 'TIMESTAMP';
+        else if (r.data_type.includes('boolean')) pgType = 'BOOLEAN';
+        columns.push({name: r.column_name, type: pgType});
+        usedNames.add(r.column_name);
+      }
+    });
+
+    const res = await api('/api/enrichment/tables', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        table_name: tableName,
+        target_crm_table: target,
+        description: desc,
+        field_mapping: fieldMapping,
+        dedup_fields: Object.values(fieldMapping),
+        columns: columns
+      })
+    });
+    showToast(`Enrichment table "${tableName}" created and registered`, 'success');
+    showEnrichmentPanel(); // refresh
+  } catch(e) {
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function runEnrichmentDedupCheck(tableName) {
+  showToast('Running dedup check...', 'info');
+  try {
+    const res = await api('/api/enrichment/dedup-check', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enrichment_table: tableName, mode: 'normalized'})
+    });
+    const s = res.stats;
+    showToast(`Dedup check complete: ${s.duplicates} duplicates, ${s.unique} unique out of ${s.total}`, 'success');
+    showEnrichmentSummary(tableName);
+  } catch(e) {
+    showToast(`Dedup check failed: ${e.message}`, 'error');
+  }
+}
+
+async function showEnrichmentSummary(tableName) {
+  try {
+    const data = await api(`/api/enrichment/summary/${tableName}`);
+    let html = `<div class="section-box" style="margin-top:16px">
+      <h3>Dedup Status: ${tableName} <span class="count-badge">${data.total} records</span></h3>
+      <div style="display:flex;gap:16px;margin:12px 0">`;
+    const colors = {unique:'var(--green)', duplicate:'var(--red)', unchecked:'var(--text3)', skipped:'var(--orange)', 'new':'var(--blue)', inserted:'var(--green)'};
+    Object.entries(data.summary||{}).forEach(([status, count]) => {
+      const pct = ((count/data.total)*100).toFixed(1);
+      html += `<div style="text-align:center">
+        <div style="font-size:24px;font-weight:700;color:${colors[status]||'var(--text1)'}">${count}</div>
+        <div style="font-size:12px;color:var(--text2)">${status} (${pct}%)</div>
+      </div>`;
+    });
+    html += `</div>
+      <div class="btn-group">
+        <button class="btn btn-primary btn-sm" onclick="syncEnrichmentToCRM('${tableName}')">Push Unique to CRM</button>
+        <button class="btn btn-secondary btn-sm" onclick="runEnrichmentDedupCheck('${tableName}')">Re-run Dedup Check</button>
+        <button class="btn btn-secondary btn-sm" onclick="browseRecord('${tableName}','')">Browse Records</button>
+      </div>
+    </div>`;
+    $('enrichContent').innerHTML += html;
+  } catch(e) {
+    showToast(`Summary error: ${e.message}`, 'error');
+  }
+}
+
+async function syncEnrichmentToCRM(tableName) {
+  if (!confirm(`Push all unique (non-duplicate) records from "${tableName}" to the target CRM table? They will get sync_status=pending.`)) return;
+  showToast('Pushing unique records to CRM table...', 'info');
+  try {
+    const res = await api('/api/enrichment/sync-to-crm', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enrichment_table: tableName, push_to_zoho: false})
+    });
+    if (res.status === 'no_records') {
+      showToast(res.message, 'warning');
+    } else {
+      showToast(`Inserted ${res.inserted} records into ${res.target_crm_table}. Use Sync Control to push to Zoho.`, 'success');
+    }
+    showEnrichmentPanel();
+  } catch(e) {
+    showToast(`Sync error: ${e.message}`, 'error');
   }
 }
 

@@ -4930,6 +4930,764 @@ def api_enrich_merge():
         return jsonify({"error": str(e)}), 500
 
 # ---------------------------------------------------------------------------
+# ROUTES - API: Enrichment Pipeline (Field-configurable dedup, enrichment
+#   tables, upload with dedup check, on-demand sync with dedup protection)
+# ---------------------------------------------------------------------------
+
+def _ensure_enrichment_registry():
+    """Create enrichment_tables registry if missing."""
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS enrichment_tables (
+                id SERIAL PRIMARY KEY,
+                table_name VARCHAR(255) UNIQUE NOT NULL,
+                target_crm_table VARCHAR(255),
+                description TEXT,
+                field_mapping JSONB DEFAULT '{}',
+                dedup_fields JSONB DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route("/api/enrich/custom-dedup", methods=["POST"])
+def api_custom_dedup():
+    """Field-configurable deduplication. User chooses which fields to match on.
+
+    Body: {
+        "table": "leads",
+        "fields": ["email", "company"],   // fields to deduplicate on
+        "mode": "exact|normalized|fuzzy",  // matching mode (default: exact)
+        "cross_table": "contacts",         // optional: check against another table
+        "cross_fields": ["email", "account_name"],  // fields in the cross table
+        "limit": 100
+    }
+    """
+    data = request.get_json() or {}
+    table = data.get("table", "")
+    fields = data.get("fields", [])
+    mode = data.get("mode", "exact")
+    cross_table = data.get("cross_table", "")
+    cross_fields = data.get("cross_fields", [])
+    limit = data.get("limit", 100)
+
+    if not table or not fields:
+        return jsonify({"error": "table and fields required"}), 400
+    if not table_valid(table):
+        return jsonify({"error": f"Invalid table: {table}"}), 400
+
+    cols = [c["column_name"] for c in get_columns(table)]
+    for f in fields:
+        if f not in cols:
+            return jsonify({"error": f"Field '{f}' not found in {table}. Available: {cols}"}), 400
+
+    pk = get_pk(table)
+    conn = get_db()
+    cur = conn.cursor()
+    clusters = []
+
+    try:
+        if mode == "exact":
+            # Group by LOWER(TRIM()) of selected fields
+            field_exprs = [f"LOWER(TRIM(COALESCE({f}::text,'')))" for f in fields]
+            concat_expr = " || '|||' || ".join(field_exprs)
+            cur.execute(f"""
+                SELECT {concat_expr} as match_key,
+                       array_agg({pk}::text ORDER BY {pk}) as ids,
+                       COUNT(*) as cnt,
+                       {', '.join(f"array_agg(DISTINCT {f}::text) as vals_{f}" for f in fields)}
+                FROM {table}
+                WHERE {' AND '.join(f"({f} IS NOT NULL AND TRIM({f}::text) != '')" for f in fields)}
+                GROUP BY {concat_expr}
+                HAVING COUNT(*) > 1
+                ORDER BY COUNT(*) DESC
+                LIMIT %s
+            """, (limit,))
+            for r in cur.fetchall():
+                field_vals = {f: r[f"vals_{f}"] for f in fields}
+                clusters.append({
+                    "type": "exact",
+                    "match_key": r["match_key"],
+                    "fields": fields,
+                    "field_values": field_vals,
+                    "count": r["cnt"],
+                    "ids": r["ids"][:20],
+                })
+
+        elif mode == "normalized":
+            # Use normalize_company_name on the first field + exact on rest
+            primary_field = fields[0]
+            other_fields = fields[1:]
+
+            # Fetch distinct values
+            select_cols = f"{pk}, {', '.join(fields)}"
+            cur.execute(f"""
+                SELECT {select_cols} FROM {table}
+                WHERE {' AND '.join(f"({f} IS NOT NULL AND TRIM({f}::text) != '')" for f in fields)}
+            """)
+            rows = cur.fetchall()
+
+            # Build groups by normalized primary field + exact others
+            groups = {}
+            for r in rows:
+                pval = r[primary_field]
+                if primary_field in ("account_name", "company"):
+                    n = normalize_company_name(str(pval))
+                    key_primary = n["stripped"] or n["canonical"] or n["normalized"]
+                else:
+                    key_primary = str(pval).strip().lower()
+
+                key_others = "|||".join(str(r.get(f, "")).strip().lower() for f in other_fields)
+                group_key = f"{key_primary}|||{key_others}"
+                groups.setdefault(group_key, []).append(r)
+
+            for gkey, entries in groups.items():
+                if len(entries) < 2:
+                    continue
+                originals = set(str(e[primary_field]).lower().strip() for e in entries)
+                if len(originals) < 2 and len(entries) < 2:
+                    continue
+                ids = [str(e[pk]) for e in entries[:20]]
+                field_vals = {}
+                for f in fields:
+                    field_vals[f] = list(set(str(e[f]) for e in entries if e.get(f)))[:10]
+                clusters.append({
+                    "type": "normalized",
+                    "match_key": gkey,
+                    "fields": fields,
+                    "field_values": field_vals,
+                    "count": len(entries),
+                    "ids": ids,
+                })
+            clusters.sort(key=lambda c: c["count"], reverse=True)
+            clusters = clusters[:limit]
+
+        elif mode == "fuzzy":
+            # Use pg_trgm similarity on primary field (requires GIN index)
+            primary_field = fields[0]
+            try:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            # Use LATERAL self-join with similarity() > 0.4
+            cur.execute(f"""
+                WITH distinct_vals AS (
+                    SELECT DISTINCT ON (LOWER(TRIM({primary_field}::text)))
+                           {pk}, {', '.join(fields)},
+                           LOWER(TRIM({primary_field}::text)) as norm_val
+                    FROM {table}
+                    WHERE {primary_field} IS NOT NULL AND TRIM({primary_field}::text) != ''
+                    ORDER BY LOWER(TRIM({primary_field}::text)), {pk}
+                    LIMIT 5000
+                )
+                SELECT a.{pk} as id_a, b.{pk} as id_b,
+                       a.{primary_field} as val_a, b.{primary_field} as val_b,
+                       similarity(a.norm_val, b.norm_val) as sim
+                FROM distinct_vals a
+                JOIN distinct_vals b ON a.{pk} < b.{pk}
+                    AND a.norm_val != b.norm_val
+                    AND similarity(a.norm_val, b.norm_val) > 0.4
+                ORDER BY sim DESC
+                LIMIT %s
+            """, (limit,))
+            for r in cur.fetchall():
+                clusters.append({
+                    "type": "fuzzy",
+                    "fields": [primary_field],
+                    "field_values": {primary_field: [r["val_a"], r["val_b"]]},
+                    "similarity": round(r["sim"], 3),
+                    "count": 2,
+                    "ids": [str(r["id_a"]), str(r["id_b"])],
+                })
+
+        # Cross-table dedup check
+        cross_matches = []
+        if cross_table and cross_fields:
+            if not table_valid(cross_table):
+                return jsonify({"error": f"Invalid cross_table: {cross_table}"}), 400
+            cross_cols = [c["column_name"] for c in get_columns(cross_table)]
+            for cf in cross_fields:
+                if cf not in cross_cols:
+                    return jsonify({"error": f"Field '{cf}' not in {cross_table}"}), 400
+
+            cross_pk = get_pk(cross_table)
+            # Match fields pairwise: fields[i] <-> cross_fields[i]
+            n_pairs = min(len(fields), len(cross_fields))
+            join_conds = []
+            for i in range(n_pairs):
+                if mode == "normalized" and fields[i] in ("account_name", "company") and cross_fields[i] in ("account_name", "company"):
+                    # Normalized cross-match done in Python below
+                    pass
+                else:
+                    join_conds.append(
+                        f"LOWER(TRIM(a.{fields[i]}::text)) = LOWER(TRIM(b.{cross_fields[i]}::text))"
+                    )
+
+            if join_conds:
+                where_a = " AND ".join(f"a.{fields[i]} IS NOT NULL AND a.{fields[i]}::text != ''" for i in range(n_pairs))
+                where_b = " AND ".join(f"b.{cross_fields[i]} IS NOT NULL AND b.{cross_fields[i]}::text != ''" for i in range(n_pairs))
+                cur.execute(f"""
+                    SELECT a.{pk}::text as source_id, b.{cross_pk}::text as target_id,
+                           {', '.join(f"a.{fields[i]}::text as src_{fields[i]}" for i in range(n_pairs))},
+                           {', '.join(f"b.{cross_fields[i]}::text as tgt_{cross_fields[i]}" for i in range(n_pairs))}
+                    FROM {table} a JOIN {cross_table} b ON {' AND '.join(join_conds)}
+                    WHERE {where_a} AND {where_b}
+                    LIMIT %s
+                """, (limit,))
+                for r in cur.fetchall():
+                    match_detail = {}
+                    for i in range(n_pairs):
+                        match_detail[f"{fields[i]}/{cross_fields[i]}"] = {
+                            "source": r[f"src_{fields[i]}"],
+                            "target": r[f"tgt_{cross_fields[i]}"],
+                        }
+                    cross_matches.append({
+                        "source_table": table, "source_id": r["source_id"],
+                        "target_table": cross_table, "target_id": r["target_id"],
+                        "matched_fields": match_detail,
+                    })
+
+        cur.close()
+        conn.close()
+        return jsonify({
+            "duplicates": clusters,
+            "total": len(clusters),
+            "cross_matches": cross_matches,
+            "cross_total": len(cross_matches),
+            "table": table,
+            "fields": fields,
+            "mode": mode,
+        })
+    except Exception as e:
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        logger.error(f"Custom dedup error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+# --- Enrichment table management ---
+
+@app.route("/api/enrichment/tables", methods=["GET"])
+def api_list_enrichment_tables():
+    """List all registered enrichment tables."""
+    _ensure_enrichment_registry()
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT et.*,
+                   (SELECT COUNT(*) FROM information_schema.tables
+                    WHERE table_schema='public' AND table_name=et.table_name) as table_exists
+            FROM enrichment_tables et ORDER BY et.created_at DESC
+        """)
+        tables = []
+        for r in cur.fetchall():
+            row = {k: serialize(v) for k, v in dict(r).items()}
+            # Get row count if table exists
+            if r["table_exists"] > 0:
+                try:
+                    cur.execute(f"SELECT COUNT(*) as cnt FROM {r['table_name']}")
+                    row["row_count"] = cur.fetchone()["cnt"]
+                except Exception:
+                    row["row_count"] = 0
+            else:
+                row["row_count"] = 0
+            tables.append(row)
+        cur.close()
+        conn.close()
+        return jsonify({"enrichment_tables": tables, "total": len(tables)})
+    except Exception as e:
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/enrichment/tables", methods=["POST"])
+def api_register_enrichment_table():
+    """Register a table as an enrichment/supporting table (not synced to CRM).
+
+    Body: {
+        "table_name": "my_research_data",
+        "target_crm_table": "leads",        // which CRM table this enriches
+        "description": "Purchased lead list for Q1 campaign",
+        "dedup_fields": ["email", "company"],  // fields to check for duplicates
+        "field_mapping": {"company_name": "company", "contact_email": "email"},
+        "columns": [...]                     // optional: create new table with these columns
+    }
+    """
+    _ensure_enrichment_registry()
+    data = request.get_json() or {}
+    table_name = _sanitize_col(data.get("table_name", ""))
+    target_crm = data.get("target_crm_table", "")
+    description = data.get("description", "")
+    dedup_fields = data.get("dedup_fields", [])
+    field_mapping = data.get("field_mapping", {})
+    columns = data.get("columns", [])
+
+    if not table_name:
+        return jsonify({"error": "table_name required"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        # Optionally create the table
+        if columns:
+            if table_name in get_tables():
+                return jsonify({"error": f"Table '{table_name}' already exists"}), 409
+            col_defs = ["id SERIAL PRIMARY KEY"]
+            for c in columns:
+                cname = _sanitize_col(c.get("name", ""))
+                ctype = c.get("type", "TEXT").upper()
+                if ctype not in {"TEXT", "VARCHAR(255)", "INTEGER", "BIGINT", "NUMERIC",
+                                 "BOOLEAN", "TIMESTAMP", "DATE", "JSONB", "UUID"}:
+                    ctype = "TEXT"
+                col_defs.append(f"{cname} {ctype}")
+            col_defs.extend([
+                "sync_status VARCHAR(50) DEFAULT 'new'",
+                "dedup_status VARCHAR(50) DEFAULT 'unchecked'",
+                "dedup_match_id TEXT",
+                "dedup_match_table TEXT",
+                "notes TEXT",
+                "created_at TIMESTAMP DEFAULT NOW()",
+                "updated_at TIMESTAMP DEFAULT NOW()"
+            ])
+            cur.execute(f"CREATE TABLE {table_name} ({', '.join(col_defs)})")
+            conn.commit()
+            logger.info(f"Created enrichment table: {table_name}")
+
+        # Register in enrichment_tables
+        cur.execute("""
+            INSERT INTO enrichment_tables (table_name, target_crm_table, description, field_mapping, dedup_fields)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (table_name) DO UPDATE SET
+                target_crm_table = EXCLUDED.target_crm_table,
+                description = EXCLUDED.description,
+                field_mapping = EXCLUDED.field_mapping,
+                dedup_fields = EXCLUDED.dedup_fields,
+                updated_at = NOW()
+            RETURNING id
+        """, (table_name, target_crm, description,
+              json.dumps(field_mapping), json.dumps(dedup_fields)))
+        reg_id = cur.fetchone()["id"]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({
+            "status": "registered",
+            "id": reg_id,
+            "table_name": table_name,
+            "target_crm_table": target_crm,
+            "dedup_fields": dedup_fields,
+        })
+    except Exception as e:
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/enrichment/tables/<table_name>", methods=["DELETE"])
+def api_unregister_enrichment_table(table_name):
+    """Unregister (but don't drop) an enrichment table."""
+    _ensure_enrichment_registry()
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM enrichment_tables WHERE table_name=%s RETURNING id", (table_name,))
+        deleted = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        if deleted:
+            return jsonify({"status": "unregistered", "table_name": table_name})
+        return jsonify({"error": "Not found"}), 404
+    except Exception as e:
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+# --- Dedup check: compare enrichment data against CRM tables ---
+
+@app.route("/api/enrichment/dedup-check", methods=["POST"])
+def api_enrichment_dedup_check():
+    """Check enrichment table records against CRM table for duplicates.
+    Marks each enrichment record as 'unique', 'duplicate', or 'possible_match'.
+
+    Body: {
+        "enrichment_table": "my_leads_list",
+        "target_crm_table": "leads",         // optional, uses registered default
+        "field_pairs": [                      // optional, uses registered default
+            {"source": "contact_email", "target": "email"},
+            {"source": "company_name", "target": "company"}
+        ],
+        "mode": "exact|normalized"            // default: exact
+    }
+    """
+    data = request.get_json() or {}
+    enrich_table = data.get("enrichment_table", "")
+    target_crm = data.get("target_crm_table", "")
+    field_pairs = data.get("field_pairs", [])
+    mode = data.get("mode", "exact")
+
+    if not enrich_table or not table_valid(enrich_table):
+        return jsonify({"error": "Valid enrichment_table required"}), 400
+
+    # Load defaults from registry if not provided
+    _ensure_enrichment_registry()
+    conn = get_db()
+    cur = conn.cursor()
+
+    try:
+        if not target_crm or not field_pairs:
+            cur.execute("SELECT * FROM enrichment_tables WHERE table_name=%s", (enrich_table,))
+            reg = cur.fetchone()
+            if reg:
+                reg = dict(reg)
+                if not target_crm:
+                    target_crm = reg.get("target_crm_table", "")
+                if not field_pairs:
+                    mapping = reg.get("field_mapping", {})
+                    if isinstance(mapping, str):
+                        mapping = json.loads(mapping)
+                    field_pairs = [{"source": k, "target": v} for k, v in mapping.items()]
+
+        if not target_crm or not field_pairs:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "target_crm_table and field_pairs required (not registered)"}), 400
+
+        if not table_valid(target_crm):
+            cur.close()
+            conn.close()
+            return jsonify({"error": f"Invalid target CRM table: {target_crm}"}), 400
+
+        enrich_cols = [c["column_name"] for c in get_columns(enrich_table)]
+        crm_cols = [c["column_name"] for c in get_columns(target_crm)]
+        enrich_pk = get_pk(enrich_table)
+        crm_pk = get_pk(target_crm)
+
+        # Validate field pairs
+        valid_pairs = []
+        for fp in field_pairs:
+            src = fp.get("source", "")
+            tgt = fp.get("target", "")
+            if src in enrich_cols and tgt in crm_cols:
+                valid_pairs.append((src, tgt))
+        if not valid_pairs:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "No valid field pairs found"}), 400
+
+        # Ensure dedup columns exist on enrichment table
+        for extra_col in ("dedup_status", "dedup_match_id", "dedup_match_table"):
+            if extra_col not in enrich_cols:
+                try:
+                    cur.execute(f"ALTER TABLE {enrich_table} ADD COLUMN {extra_col} TEXT")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+
+        # Fetch all enrichment records
+        cur.execute(f"SELECT * FROM {enrich_table}")
+        enrich_records = [dict(r) for r in cur.fetchall()]
+
+        stats = {"total": len(enrich_records), "duplicates": 0, "unique": 0, "checked": 0}
+
+        for rec in enrich_records:
+            # Build match query against CRM table
+            conditions = []
+            params = []
+            has_values = True
+            for src, tgt in valid_pairs:
+                val = rec.get(src)
+                if not val or str(val).strip() == "":
+                    has_values = False
+                    break
+                if mode == "normalized" and tgt in ("company", "account_name"):
+                    # Normalized match — compare in Python
+                    pass
+                else:
+                    conditions.append(f"LOWER(TRIM({tgt}::text)) = LOWER(TRIM(%s))")
+                    params.append(str(val))
+
+            if not has_values:
+                cur.execute(f"UPDATE {enrich_table} SET dedup_status='skipped' WHERE {enrich_pk}=%s",
+                            (rec[enrich_pk],))
+                continue
+
+            match_id = None
+            if conditions:
+                cur.execute(f"""
+                    SELECT {crm_pk}::text as match_id FROM {target_crm}
+                    WHERE {' AND '.join(conditions)} LIMIT 1
+                """, params)
+                match = cur.fetchone()
+                if match:
+                    match_id = match["match_id"]
+
+            # Normalized company name match fallback
+            if not match_id and mode == "normalized":
+                for src, tgt in valid_pairs:
+                    if tgt not in ("company", "account_name"):
+                        continue
+                    val = rec.get(src)
+                    if not val:
+                        continue
+                    n_src = normalize_company_name(str(val))
+                    if not n_src["stripped"]:
+                        continue
+                    cur.execute(f"SELECT {crm_pk}::text as mid, {tgt} FROM {target_crm} WHERE {tgt} IS NOT NULL AND {tgt} != ''")
+                    for crm_rec in cur.fetchall():
+                        n_crm = normalize_company_name(str(crm_rec[tgt]))
+                        if n_crm["stripped"] == n_src["stripped"]:
+                            match_id = crm_rec["mid"]
+                            break
+                    if match_id:
+                        break
+
+            if match_id:
+                cur.execute(f"""UPDATE {enrich_table}
+                    SET dedup_status='duplicate', dedup_match_id=%s, dedup_match_table=%s
+                    WHERE {enrich_pk}=%s""",
+                    (match_id, target_crm, rec[enrich_pk]))
+                stats["duplicates"] += 1
+            else:
+                cur.execute(f"UPDATE {enrich_table} SET dedup_status='unique' WHERE {enrich_pk}=%s",
+                            (rec[enrich_pk],))
+                stats["unique"] += 1
+            stats["checked"] += 1
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({
+            "status": "completed",
+            "stats": stats,
+            "enrichment_table": enrich_table,
+            "target_crm_table": target_crm,
+            "field_pairs": [{"source": s, "target": t} for s, t in valid_pairs],
+            "mode": mode,
+        })
+    except Exception as e:
+        try:
+            conn.rollback()
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        logger.error(f"Dedup check error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+# --- On-demand sync: push unique enrichment records to CRM table, then to Zoho ---
+
+@app.route("/api/enrichment/sync-to-crm", methods=["POST"])
+def api_enrichment_sync_to_crm():
+    """Push unique (non-duplicate) enrichment records to a CRM table in PostgreSQL,
+    then optionally push them to Zoho CRM.
+
+    Only records with dedup_status='unique' are pushed (run dedup-check first).
+
+    Body: {
+        "enrichment_table": "my_leads_list",
+        "target_crm_table": "leads",           // optional, uses registered default
+        "field_mapping": {"company_name": "company", "contact_email": "email"},
+        "push_to_zoho": false,                  // default: false (just insert into PG)
+        "sync_status": "pending",               // status for new records (pending = will sync on next push)
+        "filter_status": "unique"               // which dedup_status to push (default: unique)
+    }
+    """
+    data = request.get_json() or {}
+    enrich_table = data.get("enrichment_table", "")
+    target_crm = data.get("target_crm_table", "")
+    field_mapping = data.get("field_mapping", {})
+    push_to_zoho = data.get("push_to_zoho", False)
+    sync_status = data.get("sync_status", "pending")
+    filter_status = data.get("filter_status", "unique")
+
+    if not enrich_table or not table_valid(enrich_table):
+        return jsonify({"error": "Valid enrichment_table required"}), 400
+
+    _ensure_enrichment_registry()
+    conn = get_db()
+    cur = conn.cursor()
+
+    try:
+        # Load defaults from registry
+        if not target_crm or not field_mapping:
+            cur.execute("SELECT * FROM enrichment_tables WHERE table_name=%s", (enrich_table,))
+            reg = cur.fetchone()
+            if reg:
+                reg = dict(reg)
+                if not target_crm:
+                    target_crm = reg.get("target_crm_table", "")
+                if not field_mapping:
+                    fm = reg.get("field_mapping", {})
+                    if isinstance(fm, str):
+                        fm = json.loads(fm)
+                    field_mapping = fm
+
+        if not target_crm or not field_mapping:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "target_crm_table and field_mapping required"}), 400
+
+        if not table_valid(target_crm):
+            cur.close()
+            conn.close()
+            return jsonify({"error": f"Invalid CRM table: {target_crm}"}), 400
+
+        crm_cols = [c["column_name"] for c in get_columns(target_crm)]
+        enrich_pk = get_pk(enrich_table)
+
+        # Get unique records from enrichment table
+        cur.execute(f"SELECT * FROM {enrich_table} WHERE dedup_status=%s", (filter_status,))
+        records = [dict(r) for r in cur.fetchall()]
+
+        if not records:
+            cur.close()
+            conn.close()
+            return jsonify({
+                "status": "no_records",
+                "message": f"No records with dedup_status='{filter_status}'. Run dedup-check first.",
+            })
+
+        inserted = 0
+        errors = []
+        new_ids = []
+
+        for rec in records:
+            # Map enrichment fields to CRM fields
+            new_rec = {}
+            for src_field, tgt_field in field_mapping.items():
+                if tgt_field in crm_cols and rec.get(src_field) is not None:
+                    new_rec[tgt_field] = rec[src_field]
+
+            if not new_rec:
+                continue
+
+            # Set metadata
+            if "sync_status" in crm_cols:
+                new_rec["sync_status"] = sync_status
+            if "created_at" in crm_cols:
+                new_rec["created_at"] = datetime.now()
+            if "updated_at" in crm_cols:
+                new_rec["updated_at"] = datetime.now()
+
+            try:
+                cols_str = ", ".join(new_rec.keys())
+                phs = ", ".join(["%s"] * len(new_rec))
+                crm_pk = get_pk(target_crm)
+                cur.execute(f"INSERT INTO {target_crm} ({cols_str}) VALUES ({phs}) RETURNING {crm_pk}",
+                            list(new_rec.values()))
+                new_id = str(cur.fetchone()[crm_pk])
+                new_ids.append(new_id)
+                inserted += 1
+
+                # Update enrichment record status
+                cur.execute(f"""UPDATE {enrich_table}
+                    SET sync_status='inserted', dedup_match_id=%s, dedup_match_table=%s
+                    WHERE {enrich_pk}=%s""",
+                    (new_id, target_crm, rec[enrich_pk]))
+            except Exception as e:
+                errors.append({"record": rec.get(enrich_pk), "error": str(e)[:200]})
+                conn.rollback()
+                # Reconnect after rollback
+                conn = get_db()
+                cur = conn.cursor()
+
+        conn.commit()
+
+        # Optionally push to Zoho
+        zoho_result = None
+        if push_to_zoho and new_ids and target_crm in TABLE_MODULE_MAP:
+            module_name = TABLE_MODULE_MAP[target_crm]
+            try:
+                push_res = do_push_sync(modules=[module_name], record_ids=new_ids, table_name=target_crm)
+                zoho_result = push_res
+            except Exception as e:
+                zoho_result = {"error": str(e)}
+
+        cur.close()
+        conn.close()
+        return jsonify({
+            "status": "completed",
+            "inserted": inserted,
+            "errors": errors[:20],
+            "new_ids": new_ids[:100],
+            "target_crm_table": target_crm,
+            "push_to_zoho": push_to_zoho,
+            "zoho_result": zoho_result,
+        })
+    except Exception as e:
+        try:
+            conn.rollback()
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        logger.error(f"Enrichment sync error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/enrichment/summary/<table_name>")
+def api_enrichment_summary(table_name):
+    """Get dedup status summary for an enrichment table."""
+    if not table_valid(table_name):
+        return jsonify({"error": "Invalid table"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cols = [c["column_name"] for c in get_columns(table_name)]
+        if "dedup_status" not in cols:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "Not an enrichment table (no dedup_status column)"}), 400
+
+        cur.execute(f"""
+            SELECT dedup_status, COUNT(*) as cnt
+            FROM {table_name}
+            GROUP BY dedup_status
+            ORDER BY cnt DESC
+        """)
+        summary = {r["dedup_status"] or "null": r["cnt"] for r in cur.fetchall()}
+        total = sum(summary.values())
+
+        cur.close()
+        conn.close()
+        return jsonify({
+            "table": table_name,
+            "total": total,
+            "summary": summary,
+        })
+    except Exception as e:
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # ROUTES - API: Zoho metadata
 # ---------------------------------------------------------------------------
 @app.route("/api/zoho/modules")
