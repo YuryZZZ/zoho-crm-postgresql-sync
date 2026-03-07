@@ -375,6 +375,7 @@ textarea.form-input { min-height: 80px; resize: vertical; }
       <select class="form-select" id="enrichTable" style="width:200px" onchange="loadEnrichData()"></select>
       <button class="btn btn-primary" onclick="loadEnrichData()">Analyze</button>
       <button class="btn btn-secondary" onclick="loadFuzzyDuplicates()">Fuzzy Match</button>
+      <button class="btn btn-secondary" onclick="loadNormalizedDuplicates()">Smart Dedup</button>
       <button class="btn btn-secondary" onclick="loadCrossModuleDuplicates()">Cross-Module</button>
       <button class="btn btn-secondary" onclick="loadRecentChanges()">Change Log</button>
     </div>
@@ -1361,6 +1362,51 @@ async function loadFuzzyDuplicates() {
         </tr>`;
       });
       html += '</tbody></table></div>';
+    }
+    html += '</div>';
+    $('enrichContent').innerHTML = html;
+  } catch (e) {
+    $('enrichContent').innerHTML = `<div class="section-box" style="border-color:var(--red)"><p style="color:var(--red)">Error: ${e.message}</p></div>`;
+  }
+}
+
+async function loadNormalizedDuplicates() {
+  const table = $('enrichTable').value;
+  if (!table) { showToast('Select a table first','warning'); return; }
+  $('enrichContent').innerHTML = '<p style="color:var(--text3)">Running smart normalization pipeline (legal suffixes, symbols, phonetics)...</p>';
+  try {
+    const data = await api(`/api/enrich/normalized-duplicates/${table}?limit=100`);
+    let html = `<div class="enrich-section"><h3>Smart Dedup — Normalized Matching <span class="count-badge">${data.total} clusters</span></h3>`;
+    html += `<p style="color:var(--text3);font-size:12px;margin-bottom:12px">10-stage normalizer: Unicode ➜ Legal suffixes (Ltd=Limited=LLC) ➜ Symbols (&=and) ➜ Tokenize ➜ Phonetic hash</p>`;
+    if (data.normalized_duplicates.length === 0) {
+      html += '<p style="color:var(--green)">No normalized duplicates found — company names are already clean!</p>';
+    } else {
+      data.normalized_duplicates.forEach(c => {
+        const typeBadge = c.type === 'phonetic_match'
+          ? '<span class="badge" style="background:var(--orange);color:#fff">Phonetic</span>'
+          : c.type === 'normalized_person'
+          ? '<span class="badge" style="background:var(--blue);color:#fff">Person</span>'
+          : '<span class="badge" style="background:var(--green);color:#fff">Canonical</span>';
+        html += `<div class="section-box" style="margin-bottom:8px;padding:10px 14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span>${typeBadge} <strong>${c.field}</strong> — ${c.distinct_values} variants, ${c.count} records</span>
+            <span style="font-size:11px;color:var(--text3)">${c.match_reason}</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">`;
+        (c.variants||[]).forEach(v => {
+          const suffix = v.legal_suffix ? ` <span style="color:var(--orange);font-size:11px">[${v.legal_suffix}]</span>` : '';
+          html += `<span class="badge" style="background:var(--bg3);color:var(--text1);padding:4px 8px">${truncate(v.value,40)}${suffix} <span style="color:var(--text3)">(${v.count})</span></span>`;
+        });
+        html += `</div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-xs btn-primary" onclick="openMergeModal('${table}','${(c.ids||[]).join(',')}')">Merge</button>
+            <button class="btn btn-xs btn-secondary" onclick="browseDuplicates('${table}','${(c.variants||[{}])[0].value||''}')">Browse</button>
+          </div>
+        </div>`;
+      });
+    }
+    if (data.stats) {
+      html += `<p style="color:var(--text3);font-size:11px;margin-top:8px">Stats: ${data.stats.methods.join(', ')}</p>`;
     }
     html += '</div>';
     $('enrichContent').innerHTML = html;

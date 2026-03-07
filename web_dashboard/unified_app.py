@@ -9,6 +9,7 @@ import json
 import hashlib
 import logging
 import os
+import re
 import sys
 import time
 import threading
@@ -3742,6 +3743,147 @@ def api_upload_create_table():
         return jsonify({"error": str(e)}), 500
 
 # ---------------------------------------------------------------------------
+# Company Name Normalizer (adapted from OpenCode super_app research)
+# ---------------------------------------------------------------------------
+# 10-stage pipeline for company/account name normalization:
+# Unicode NFKC → lowercase → whitespace → punctuation → symbol mapping →
+# legal suffix normalization → tokenize → stopword removal → canonical form → phonetic hash
+
+_LEGAL_SUFFIXES = {
+    'limited': 'ltd', 'ltd': 'ltd', 'ltd.': 'ltd',
+    'incorporated': 'inc', 'inc': 'inc', 'inc.': 'inc',
+    'corporation': 'corp', 'corp': 'corp', 'corp.': 'corp',
+    'company': 'co', 'co': 'co', 'co.': 'co',
+    'llc': 'llc', 'l.l.c.': 'llc', 'l.l.c': 'llc',
+    'plc': 'plc', 'p.l.c.': 'plc', 'p.l.c': 'plc',
+    'gmbh': 'gmbh', 'g.m.b.h.': 'gmbh',
+    'sarl': 'sarl', 's.a.r.l.': 'sarl',
+    'bv': 'bv', 'b.v.': 'bv', 'nv': 'nv', 'n.v.': 'nv',
+    'sa': 'sa', 's.a.': 'sa', 'ag': 'ag', 'a.g.': 'ag',
+    'srl': 'srl', 's.r.l.': 'srl',
+    'pty': 'pty', 'pty.': 'pty',
+    'llp': 'llp', 'l.l.p.': 'llp',
+    'ooo': 'ooo', 'ооо': 'ooo',  # Russian ООО
+    'zao': 'zao', 'зао': 'zao',  # Russian ЗАО
+    'oao': 'oao', 'оао': 'oao',  # Russian ОАО
+    'ip': 'ip', 'ип': 'ip',      # Russian ИП
+}
+
+_COMPANY_STOPWORDS = {'the', 'of', 'in', 'for', 'to', 'an', 'at', 'by', 'with', 'from', 'a'}
+
+# Soundex lookup for phonetic hashing
+_SOUNDEX_MAP = {
+    'b': '1', 'f': '1', 'p': '1', 'v': '1',
+    'c': '2', 'g': '2', 'j': '2', 'k': '2', 'q': '2', 's': '2', 'x': '2', 'z': '2',
+    'd': '3', 't': '3',
+    'l': '4',
+    'm': '5', 'n': '5',
+    'r': '6',
+}
+
+
+def _soundex(text):
+    """Soundex phonetic hash."""
+    clean = re.sub(r'[^a-z]', '', text.lower())
+    if not clean:
+        return ""
+    result = [clean[0].upper()]
+    prev = _SOUNDEX_MAP.get(clean[0], '')
+    for ch in clean[1:]:
+        code = _SOUNDEX_MAP.get(ch, '')
+        if code and code != prev:
+            result.append(code)
+        prev = code if code else prev
+    return ''.join(result[:4]).ljust(4, '0')
+
+
+def normalize_company_name(name):
+    """Normalize a company/account name through a 12-stage pipeline.
+    Based on OpenCode METHODS_REFERENCE: strips legal suffixes entirely so
+    "AECOM LIMITED", "AECOM LTD", "AECOM LLC" all become "aecom".
+    Returns dict with: normalized, stripped (no suffix), tokens, canonical,
+    phonetic, legal_suffix found."""
+    if not name or not isinstance(name, str):
+        return {"normalized": "", "stripped": "", "tokens": [], "canonical": "",
+                "phonetic": "", "legal_suffix": ""}
+
+    import unicodedata as _ud
+
+    # Stage 1: Unicode NFKC
+    text = _ud.normalize('NFKC', name)
+    # Stage 2: Lowercase
+    text = text.lower()
+    # Stage 3: Whitespace normalization
+    text = ' '.join(text.split())
+    # Stage 4: Remove CRN/registration codes in parentheses — e.g. "CONSULTUS (PEMXQ) LTD"
+    text = re.sub(r'\s*\([A-Za-z0-9]+\)\s*', ' ', text)
+    # Stage 5: Punctuation — keep & and alphanumerics
+    text = re.sub(r'[""''`]', "'", text)
+    text = re.sub(r'[—–−]', '-', text)
+    text = re.sub(r'[^\w\s&]', ' ', text)
+    # Stage 6: Symbol mapping
+    text = text.replace('&', ' and ')
+    text = ' '.join(text.split())
+
+    # Stage 7: Legal suffix detection and REMOVAL (OpenCode approach: strip entirely)
+    words = text.split()
+    legal_suffix = ""
+    core_words = []
+    for w in words:
+        clean_w = re.sub(r'[^\w]', '', w).lower()
+        if clean_w in _LEGAL_SUFFIXES:
+            legal_suffix = _LEGAL_SUFFIXES[clean_w]
+            # Don't add to core_words — strip the suffix entirely
+        else:
+            core_words.append(w)
+
+    # Stage 8: Stopword removal (keep 'and' — important for company names)
+    tokens = [t for t in core_words if t and t not in _COMPANY_STOPWORDS]
+    # Stage 9: "stripped" form — company name without any legal suffix (order preserved)
+    stripped = ' '.join(tokens)
+    # Stage 10: Canonical form (sorted tokens for order-independent matching)
+    canonical = ' '.join(sorted(tokens)) if tokens else ""
+    # Stage 11: Phonetic hash on stripped name
+    phonetic = _soundex(stripped)
+    # Stage 12: "normalized" form — includes suffix for display, stripped for matching
+    normalized = stripped + (f" {legal_suffix}" if legal_suffix else "")
+
+    return {
+        "normalized": normalized,
+        "stripped": stripped,
+        "tokens": tokens,
+        "canonical": canonical,
+        "phonetic": phonetic,
+        "legal_suffix": legal_suffix,
+    }
+
+
+def normalize_person_name(first_name, last_name):
+    """Normalize a person name (title removal, unicode, canonical form)."""
+    import unicodedata as _ud
+    titles = {'mr', 'mrs', 'ms', 'miss', 'dr', 'prof', 'sir', 'lord', 'lady',
+              'duke', 'baron', 'earl', 'count', 'countess', 'rev', 'fr'}
+
+    parts = []
+    for raw in (first_name, last_name):
+        if not raw or not isinstance(raw, str):
+            continue
+        text = _ud.normalize('NFKC', raw).lower().strip()
+        text = re.sub(r'[^\w\s-]', '', text)
+        words = [w for w in text.split() if w.rstrip('.') not in titles]
+        parts.extend(words)
+
+    canonical = ' '.join(sorted(parts)) if parts else ""
+    phonetic = _soundex(' '.join(parts))
+    return {
+        "normalized": ' '.join(parts),
+        "tokens": parts,
+        "canonical": canonical,
+        "phonetic": phonetic,
+    }
+
+
+# ---------------------------------------------------------------------------
 # ROUTES - API: Enrich
 # ---------------------------------------------------------------------------
 @app.route("/api/enrich/duplicates/<table_name>")
@@ -4225,6 +4367,235 @@ def api_enrich_fuzzy_duplicates(table_name):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/enrich/normalized-duplicates/<table_name>")
+def api_enrich_normalized_duplicates(table_name):
+    """Find duplicate company/account names using the 10-stage normalizer pipeline.
+    Catches duplicates that LOWER(TRIM()) misses: 'Ltd' vs 'Limited', '&' vs 'and',
+    legal suffix variants, and phonetic typo matches.
+    Works on: account_name, company, first_name+last_name."""
+    if not table_valid(table_name):
+        return jsonify({"error": "Invalid table"}), 400
+
+    page_limit = request.args.get("limit", 100, type=int)
+    mode = request.args.get("mode", "all")  # all, company, person
+    conn = get_db()
+    cur = conn.cursor()
+    cols = [c["column_name"] for c in get_columns(table_name)]
+    pk = get_pk(table_name)
+    clusters = []
+    stats = {"total_values": 0, "total_clusters": 0, "methods": []}
+
+    try:
+        # --- Company / Account name normalization ---
+        if mode in ("all", "company"):
+            for field in ("account_name", "company"):
+                if field not in cols:
+                    continue
+
+                # Fetch all distinct non-empty values with their record IDs
+                cur.execute(f"""
+                    SELECT {field} as val, array_agg({pk}::text ORDER BY {pk}) as ids,
+                           COUNT(*) as cnt
+                    FROM {table_name}
+                    WHERE {field} IS NOT NULL AND TRIM({field}) != ''
+                    GROUP BY {field}
+                    ORDER BY {field}
+                """)
+                rows = cur.fetchall()
+                stats["total_values"] += len(rows)
+
+                # Normalize all values in Python — fast for distinct values (typically 1-10K)
+                by_stripped = {}    # stripped (no suffix) → list of entries
+                by_canonical = {}   # canonical (sorted, no suffix) → list of entries
+                by_phonetic = {}    # phonetic_hash → list of entries
+
+                for r in rows:
+                    val = r["val"]
+                    n = normalize_company_name(val)
+                    entry = {"original": val, "ids": r["ids"], "count": r["cnt"], "norm": n}
+
+                    # Group by stripped form (AECOM Ltd → aecom, AECOM Limited → aecom)
+                    if n["stripped"]:
+                        by_stripped.setdefault(n["stripped"], []).append(entry)
+                    # Group by canonical form (sorted tokens, catches word reorder too)
+                    if n["canonical"]:
+                        by_canonical.setdefault(n["canonical"], []).append(entry)
+                    # Group by phonetic hash (catches typos)
+                    if n["phonetic"] and len(n["tokens"]) >= 2:
+                        by_phonetic.setdefault(n["phonetic"], []).append(entry)
+
+                # Priority 1: Stripped-form clusters (most useful — "AECOM Ltd" = "AECOM Limited" = "AECOM")
+                stripped_originals = set()
+                for stripped, entries in by_stripped.items():
+                    if len(entries) < 2:
+                        continue
+                    originals = set(e["original"].lower().strip() for e in entries)
+                    if len(originals) < 2:
+                        continue
+                    all_ids = []
+                    variants = []
+                    for e in entries[:10]:
+                        all_ids.extend(e["ids"][:5])
+                        variants.append({"value": e["original"], "count": e["count"],
+                                         "normalized": e["norm"]["normalized"],
+                                         "legal_suffix": e["norm"]["legal_suffix"]})
+                    total = sum(e["count"] for e in entries)
+                    clusters.append({
+                        "type": "suffix_stripped", "field": field,
+                        "stripped": stripped,
+                        "variants": variants,
+                        "count": total, "distinct_values": len(entries),
+                        "ids": all_ids[:20],
+                        "match_reason": "Same company after stripping legal suffixes (Ltd/Limited/LLC/Inc/Corp/GmbH)",
+                    })
+                    for e in entries:
+                        stripped_originals.add(e["original"].lower().strip())
+
+                # Priority 2: Canonical clusters — catches word-reorder not found by stripped
+                for canonical, entries in by_canonical.items():
+                    if len(entries) < 2:
+                        continue
+                    novel = [e for e in entries
+                             if e["original"].lower().strip() not in stripped_originals]
+                    if len(novel) < 2:
+                        continue
+                    originals = set(e["original"].lower().strip() for e in novel)
+                    if len(originals) < 2:
+                        continue
+                    all_ids = []
+                    variants = []
+                    for e in novel[:10]:
+                        all_ids.extend(e["ids"][:5])
+                        variants.append({"value": e["original"], "count": e["count"],
+                                         "normalized": e["norm"]["normalized"],
+                                         "legal_suffix": e["norm"]["legal_suffix"]})
+                    total = sum(e["count"] for e in novel)
+                    clusters.append({
+                        "type": "canonical_reorder", "field": field,
+                        "canonical": canonical,
+                        "variants": variants,
+                        "count": total, "distinct_values": len(novel),
+                        "ids": all_ids[:20],
+                        "match_reason": "Same tokens in different order + suffix stripped",
+                    })
+                    for e in novel:
+                        stripped_originals.add(e["original"].lower().strip())
+
+                # Priority 3: Phonetic — only for entries not already found, strict token overlap
+                for phon, entries in by_phonetic.items():
+                    if len(entries) < 2 or not phon:
+                        continue
+                    novel = [e for e in entries
+                             if e["original"].lower().strip() not in stripped_originals]
+                    if len(novel) < 2:
+                        continue
+                    originals = set(e["original"].lower().strip() for e in novel)
+                    if len(originals) < 2:
+                        continue
+                    # Strict filter: require ≥50% Jaccard token overlap to avoid noise
+                    first_tokens = set(novel[0]["norm"]["tokens"])
+                    related = [novel[0]]
+                    for e in novel[1:]:
+                        e_tokens = set(e["norm"]["tokens"])
+                        shared = first_tokens & e_tokens
+                        total = first_tokens | e_tokens
+                        jaccard = len(shared) / len(total) if total else 0
+                        if jaccard >= 0.5 and len(shared) >= 2:
+                            related.append(e)
+                    if len(related) < 2:
+                        continue
+                    all_ids = []
+                    variants = []
+                    for e in related[:10]:
+                        all_ids.extend(e["ids"][:5])
+                        variants.append({"value": e["original"], "count": e["count"],
+                                         "normalized": e["norm"]["normalized"],
+                                         "phonetic": e["norm"]["phonetic"]})
+                    total = sum(e["count"] for e in related)
+                    clusters.append({
+                        "type": "phonetic_match", "field": field,
+                        "phonetic": phon,
+                        "variants": variants,
+                        "count": total, "distinct_values": len(related),
+                        "ids": all_ids[:20],
+                        "match_reason": "Similar sound (Soundex) + shared tokens — possible typos",
+                    })
+
+                stats["methods"].append(f"{field}: {len(rows)} distinct values")
+
+        # --- Person name normalization ---
+        if mode in ("all", "person") and "first_name" in cols and "last_name" in cols:
+            cur.execute(f"""
+                SELECT first_name, last_name, array_agg({pk}::text ORDER BY {pk}) as ids,
+                       COUNT(*) as cnt
+                FROM {table_name}
+                WHERE COALESCE(first_name,'')||COALESCE(last_name,'') != ''
+                GROUP BY first_name, last_name
+                ORDER BY first_name, last_name
+            """)
+            rows = cur.fetchall()
+            stats["total_values"] += len(rows)
+
+            by_canonical = {}
+            by_phonetic = {}
+
+            for r in rows:
+                n = normalize_person_name(r["first_name"], r["last_name"])
+                orig_display = f"{r['first_name'] or ''} {r['last_name'] or ''}".strip()
+                entry = {"original": orig_display, "ids": r["ids"], "count": r["cnt"], "norm": n}
+
+                if n["canonical"]:
+                    by_canonical.setdefault(n["canonical"], []).append(entry)
+                if n["phonetic"]:
+                    by_phonetic.setdefault(n["phonetic"], []).append(entry)
+
+            for canonical, entries in by_canonical.items():
+                if len(entries) < 2:
+                    continue
+                originals = set(e["original"].lower().strip() for e in entries)
+                if len(originals) < 2:
+                    continue
+                all_ids = []
+                variants = []
+                for e in entries[:10]:
+                    all_ids.extend(e["ids"][:5])
+                    variants.append({"value": e["original"], "count": e["count"],
+                                     "normalized": e["norm"]["normalized"]})
+                total = sum(e["count"] for e in entries)
+                clusters.append({
+                    "type": "normalized_person", "field": "name",
+                    "canonical": canonical,
+                    "variants": variants,
+                    "count": total, "distinct_values": len(entries),
+                    "ids": all_ids[:20],
+                    "match_reason": "Same person after title removal + normalization",
+                })
+
+            stats["methods"].append(f"person_name: {len(rows)} distinct values")
+
+        # Sort by cluster size (biggest first)
+        clusters.sort(key=lambda c: c["count"], reverse=True)
+        clusters = clusters[:page_limit]
+        stats["total_clusters"] = len(clusters)
+
+        cur.close()
+        conn.close()
+        return jsonify({
+            "normalized_duplicates": clusters,
+            "total": len(clusters),
+            "stats": stats,
+            "mode": mode,
+        })
+    except Exception as e:
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        logger.error(f"Normalized dedup error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/enrich/cross-module-duplicates")
 def api_enrich_cross_module_duplicates():
     """Find records that appear in multiple modules (e.g. lead also exists as contact).
@@ -4315,13 +4686,14 @@ def api_enrich_cross_module_duplicates():
                         "target_table": t2, "target_id": r["id_b"],
                     })
 
-        # Accounts vs leads (company name = account name)
+        # Accounts vs leads (company name = account name) — exact + normalized match
         if "leads" in tables and "accounts" in tables:
             leads_cols = [c["column_name"] for c in get_columns("leads")]
             accts_cols = [c["column_name"] for c in get_columns("accounts")]
             if "company" in leads_cols and "account_name" in accts_cols:
                 lpk = get_pk("leads")
                 apk = get_pk("accounts")
+                # SQL exact match (LOWER/TRIM)
                 cur.execute(f"""
                     SELECT l.{lpk}::text as lead_id, a.{apk}::text as account_id,
                            l.company as lead_company, a.account_name as account_name
@@ -4338,6 +4710,49 @@ def api_enrich_cross_module_duplicates():
                         "source_table": "leads", "source_id": r["lead_id"],
                         "target_table": "accounts", "target_id": r["account_id"],
                     })
+
+                # Normalized match — catches Ltd vs Limited, & vs and, etc.
+                exact_pairs = {(d["source_id"], d["target_id"])
+                               for d in cross_dupes if d.get("field") == "company/account_name"}
+                try:
+                    cur.execute(f"SELECT {lpk}::text as id, company as val FROM leads WHERE company IS NOT NULL AND company != ''")
+                    lead_companies = cur.fetchall()
+                    cur.execute(f"SELECT {apk}::text as id, account_name as val FROM accounts WHERE account_name IS NOT NULL AND account_name != ''")
+                    acct_names = cur.fetchall()
+
+                    # Build normalized index from accounts (stripped = no legal suffix)
+                    acct_by_stripped = {}
+                    for a in acct_names:
+                        n = normalize_company_name(a["val"])
+                        if n["stripped"]:
+                            acct_by_stripped.setdefault(n["stripped"], []).append(a)
+
+                    # Match leads against accounts by stripped form
+                    norm_count = 0
+                    for l in lead_companies:
+                        n = normalize_company_name(l["val"])
+                        if not n["stripped"]:
+                            continue
+                        matches = acct_by_stripped.get(n["stripped"], [])
+                        for a in matches:
+                            pair = (l["id"], a["id"])
+                            if pair in exact_pairs:
+                                continue  # already found by SQL
+                            cross_dupes.append({
+                                "field": "company/account_name",
+                                "value": f"{l['val']} ↔ {a['val']}",
+                                "source_table": "leads", "source_id": l["id"],
+                                "target_table": "accounts", "target_id": a["id"],
+                                "match_type": "normalized",
+                                "stripped": n["stripped"],
+                            })
+                            norm_count += 1
+                            if norm_count >= page_limit:
+                                break
+                        if norm_count >= page_limit:
+                            break
+                except Exception as e:
+                    logger.warning(f"Cross-module normalized match error: {e}")
 
         cur.close()
         conn.close()
