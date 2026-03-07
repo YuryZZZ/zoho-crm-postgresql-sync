@@ -5688,6 +5688,642 @@ def api_enrichment_summary(table_name):
 
 
 # ---------------------------------------------------------------------------
+# ROUTES - API: Companies House (UK company lookup — FREE API)
+# ---------------------------------------------------------------------------
+
+_COMPANIES_HOUSE_BASE = "https://api.company-information.service.gov.uk"
+
+
+def _get_ch_api_key():
+    """Get Companies House API key from env or Secret Manager."""
+    key = os.environ.get("COMPANIES_HOUSE_API_KEY", "")
+    if not key:
+        try:
+            from google.cloud import secretmanager
+            client = secretmanager.SecretManagerServiceClient()
+            project = os.environ.get("GOOGLE_CLOUD_PROJECT", "leadenrich-a2b9d")
+            name = f"projects/{project}/secrets/companies-house-api-key/versions/latest"
+            resp = client.access_secret_version(request={"name": name})
+            key = resp.payload.data.decode("UTF-8").strip()
+        except Exception:
+            pass
+    return key
+
+
+def _ch_request(path, params=None):
+    """Make authenticated request to Companies House API."""
+    api_key = _get_ch_api_key()
+    if not api_key:
+        raise ValueError("COMPANIES_HOUSE_API_KEY not configured")
+    url = f"{_COMPANIES_HOUSE_BASE}{path}"
+    resp = requests.get(url, params=params, auth=(api_key, ""), timeout=15)
+    if resp.status_code == 429:
+        raise ValueError("Companies House rate limit exceeded (600 calls/5 min)")
+    if resp.status_code != 200:
+        raise ValueError(f"Companies House API error {resp.status_code}: {resp.text[:200]}")
+    return resp.json()
+
+
+@app.route("/api/companies-house/search")
+def api_ch_search():
+    """Search UK companies by name.
+    Query params: q (search term), limit (max results, default 20)"""
+    q = request.args.get("q", "")
+    limit = request.args.get("limit", 20, type=int)
+    if not q:
+        return jsonify({"error": "q parameter required"}), 400
+    try:
+        data = _ch_request("/search/companies", {"q": q, "items_per_page": limit})
+        companies = []
+        for item in data.get("items", []):
+            companies.append({
+                "company_number": item.get("company_number"),
+                "title": item.get("title"),
+                "company_status": item.get("company_status"),
+                "company_type": item.get("company_type"),
+                "date_of_creation": item.get("date_of_creation"),
+                "address": item.get("address_snippet"),
+                "sic_codes": item.get("sic_codes", []),
+            })
+        return jsonify({"companies": companies, "total": data.get("total_results", 0)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/companies-house/company/<company_number>")
+def api_ch_company(company_number):
+    """Get full company profile from Companies House."""
+    try:
+        profile = _ch_request(f"/company/{company_number}")
+        return jsonify({"profile": profile})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/companies-house/officers/<company_number>")
+def api_ch_officers(company_number):
+    """Get company officers (directors, secretaries)."""
+    try:
+        data = _ch_request(f"/company/{company_number}/officers",
+                           {"items_per_page": 100})
+        officers = []
+        for item in data.get("items", []):
+            officers.append({
+                "name": item.get("name"),
+                "officer_role": item.get("officer_role"),
+                "appointed_on": item.get("appointed_on"),
+                "resigned_on": item.get("resigned_on"),
+                "nationality": item.get("nationality"),
+                "occupation": item.get("occupation"),
+                "country_of_residence": item.get("country_of_residence"),
+                "address": item.get("address"),
+            })
+        return jsonify({"officers": officers, "total": len(officers),
+                        "active": sum(1 for o in officers if not o.get("resigned_on"))})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/companies-house/filing-history/<company_number>")
+def api_ch_filings(company_number):
+    """Get company filing history."""
+    limit = request.args.get("limit", 25, type=int)
+    try:
+        data = _ch_request(f"/company/{company_number}/filing-history",
+                           {"items_per_page": limit})
+        filings = []
+        for item in data.get("items", []):
+            filings.append({
+                "date": item.get("date"),
+                "category": item.get("category"),
+                "type": item.get("type"),
+                "description": item.get("description"),
+                "description_values": item.get("description_values"),
+            })
+        return jsonify({"filings": filings, "total": data.get("total_count", len(filings))})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/companies-house/psc/<company_number>")
+def api_ch_psc(company_number):
+    """Get Persons with Significant Control (shareholders >25%)."""
+    try:
+        data = _ch_request(f"/company/{company_number}/persons-with-significant-control",
+                           {"items_per_page": 100})
+        pscs = []
+        for item in data.get("items", []):
+            pscs.append({
+                "name": item.get("name"),
+                "natures_of_control": item.get("natures_of_control", []),
+                "notified_on": item.get("notified_on"),
+                "ceased_on": item.get("ceased_on"),
+                "nationality": item.get("nationality"),
+                "country_of_residence": item.get("country_of_residence"),
+                "kind": item.get("kind"),
+            })
+        return jsonify({"pscs": pscs, "total": len(pscs)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/companies-house/snapshot/<company_number>")
+def api_ch_snapshot(company_number):
+    """Get comprehensive company snapshot (profile + officers + PSC + charges)."""
+    try:
+        result = {"company_number": company_number}
+        errors = {}
+        # Profile
+        try:
+            result["profile"] = _ch_request(f"/company/{company_number}")
+        except Exception as e:
+            errors["profile"] = str(e)
+        # Officers
+        try:
+            off_data = _ch_request(f"/company/{company_number}/officers", {"items_per_page": 50})
+            result["officers"] = off_data.get("items", [])
+        except Exception as e:
+            errors["officers"] = str(e)
+        # PSC
+        try:
+            psc_data = _ch_request(f"/company/{company_number}/persons-with-significant-control",
+                                    {"items_per_page": 50})
+            result["pscs"] = psc_data.get("items", [])
+        except Exception as e:
+            errors["pscs"] = str(e)
+        # Charges
+        try:
+            chg_data = _ch_request(f"/company/{company_number}/charges", {"items_per_page": 20})
+            result["charges"] = chg_data.get("items", [])
+        except Exception as e:
+            errors["charges"] = str(e)
+        # Insolvency
+        try:
+            result["insolvency"] = _ch_request(f"/company/{company_number}/insolvency")
+        except Exception:
+            pass  # Often 404, normal
+        if errors:
+            result["errors"] = errors
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/companies-house/enrich-account/<account_id>", methods=["POST"])
+def api_ch_enrich_account(account_id):
+    """Enrich an account record with Companies House data.
+    Searches by account_name, finds the best match, writes officers/PSC/status back."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM accounts WHERE id=%s", (account_id,))
+        account = cur.fetchone()
+        if not account:
+            cur.close(); conn.close()
+            return jsonify({"error": "Account not found"}), 404
+        account = dict(account)
+        account_name = account.get("account_name", "")
+        if not account_name:
+            cur.close(); conn.close()
+            return jsonify({"error": "Account has no name"}), 400
+
+        # Search Companies House
+        search_data = _ch_request("/search/companies", {"q": account_name, "items_per_page": 5})
+        matches = search_data.get("items", [])
+        if not matches:
+            cur.close(); conn.close()
+            return jsonify({"status": "no_match", "message": f"No UK company found for '{account_name}'"})
+
+        # Find best match using normalizer
+        best_match = None
+        best_score = 0
+        n_search = normalize_company_name(account_name)
+        for m in matches:
+            n_m = normalize_company_name(m.get("title", ""))
+            if n_m["stripped"] == n_search["stripped"]:
+                best_match = m
+                best_score = 1.0
+                break
+            if n_m["canonical"] == n_search["canonical"]:
+                if not best_match or 0.9 > best_score:
+                    best_match = m
+                    best_score = 0.9
+            # Fallback: just use the first result
+            if not best_match:
+                best_match = m
+                best_score = 0.5
+
+        if not best_match:
+            cur.close(); conn.close()
+            return jsonify({"status": "no_match"})
+
+        company_number = best_match["company_number"]
+
+        # Get full profile + officers
+        profile = _ch_request(f"/company/{company_number}")
+        try:
+            off_data = _ch_request(f"/company/{company_number}/officers", {"items_per_page": 20})
+            officers = off_data.get("items", [])
+        except Exception:
+            officers = []
+
+        # Build enrichment data
+        ch_data = {
+            "company_number": company_number,
+            "company_status": profile.get("company_status"),
+            "company_type": profile.get("company_type"),
+            "date_of_creation": profile.get("date_of_creation"),
+            "sic_codes": profile.get("sic_codes", []),
+            "registered_address": profile.get("registered_office_address", {}),
+            "officers": [{"name": o.get("name"), "role": o.get("officer_role"),
+                          "appointed": o.get("appointed_on"),
+                          "resigned": o.get("resigned_on")} for o in officers[:10]],
+            "match_score": best_score,
+            "matched_name": best_match.get("title"),
+        }
+
+        # Store in custom_fields or a dedicated column
+        acct_cols = [c["column_name"] for c in get_columns("accounts")]
+        updates = {}
+        if "companies_house_data" not in acct_cols:
+            try:
+                cur.execute("ALTER TABLE accounts ADD COLUMN companies_house_data JSONB")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+        updates["companies_house_data"] = json.dumps(ch_data)
+
+        # Update billing address if empty
+        reg_addr = profile.get("registered_office_address", {})
+        if reg_addr:
+            addr_line = ", ".join(filter(None, [
+                reg_addr.get("address_line_1"),
+                reg_addr.get("address_line_2"),
+                reg_addr.get("locality"),
+                reg_addr.get("region"),
+                reg_addr.get("postal_code"),
+            ]))
+            for addr_col in ("billing_street", "shipping_street"):
+                if addr_col in acct_cols and not account.get(addr_col):
+                    updates[addr_col] = addr_line
+                    break
+
+        if updates:
+            sets = ", ".join(f"{k}=%s" for k in updates.keys())
+            cur.execute(f"UPDATE accounts SET {sets}, sync_status='modified', updated_at=%s WHERE id=%s",
+                        list(updates.values()) + [datetime.now(), account_id])
+            conn.commit()
+
+        cur.close()
+        conn.close()
+        return jsonify({
+            "status": "enriched",
+            "company_number": company_number,
+            "matched_name": best_match.get("title"),
+            "match_score": best_score,
+            "data": ch_data,
+        })
+    except Exception as e:
+        try:
+            cur.close(); conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# ROUTES - API: Apify Social Media Enrichment (LinkedIn, Facebook, Instagram)
+# ---------------------------------------------------------------------------
+
+# Pre-configured Apify actors for social media enrichment
+_APIFY_ACTORS = {
+    "linkedin_company": {
+        "actor_id": "anchor/linkedin-company-scraper",
+        "name": "LinkedIn Company Scraper",
+        "description": "Extract company info from LinkedIn (size, industry, employees)",
+        "cost_per_100": 3.00,
+        "input_builder": lambda company: {
+            "urls": [company["linkedin_url"]] if company.get("linkedin_url") else [],
+            "searchTerms": [company.get("name", "")] if not company.get("linkedin_url") else [],
+        },
+    },
+    "linkedin_people": {
+        "actor_id": "anchor/linkedin-people-scraper",
+        "name": "LinkedIn People Scraper",
+        "description": "Find people at a company on LinkedIn",
+        "cost_per_100": 3.00,
+        "input_builder": lambda company: {
+            "searchTerms": [f"{company.get('name', '')} employees"],
+            "maxResults": 20,
+        },
+    },
+    "instagram_scraper": {
+        "actor_id": "apify/instagram-scraper",
+        "name": "Instagram Scraper",
+        "description": "Extract Instagram profiles, posts, followers, engagement",
+        "cost_per_100": 1.00,
+        "input_builder": lambda company: {
+            "usernames": [company["instagram_handle"]] if company.get("instagram_handle") else [],
+            "searchTerms": [company.get("name", "")] if not company.get("instagram_handle") else [],
+            "maxPosts": 20,
+        },
+    },
+    "facebook_pages": {
+        "actor_id": "apify/facebook-pages-scraper",
+        "name": "Facebook Pages Scraper",
+        "description": "Extract Facebook page info, posts, engagement metrics",
+        "cost_per_100": 0.50,
+        "input_builder": lambda company: {
+            "urls": [company["facebook_url"]] if company.get("facebook_url") else [],
+            "searchTerms": [company.get("name", "")] if not company.get("facebook_url") else [],
+            "maxPosts": 10,
+        },
+    },
+    "website_contact": {
+        "actor_id": "apify/contact-information-scraper",
+        "name": "Website Contact Scraper",
+        "description": "Extract emails, phones, social links from company website",
+        "cost_per_100": 0.30,
+        "input_builder": lambda company: {
+            "urls": [company.get("website", "")],
+            "maxDepth": 2,
+        },
+    },
+    "google_maps": {
+        "actor_id": "apify/google-maps-scraper",
+        "name": "Google Maps Scraper",
+        "description": "Extract business data, reviews, location from Google Maps",
+        "cost_per_100": 1.50,
+        "input_builder": lambda company: {
+            "queries": [company.get("name", "")],
+            "maxReviews": 10,
+            "language": "en",
+        },
+    },
+}
+
+
+def _get_apify_token():
+    """Get Apify API token from env or Secret Manager."""
+    token = os.environ.get("APIFY_API_TOKEN", "")
+    if not token:
+        try:
+            from google.cloud import secretmanager
+            client = secretmanager.SecretManagerServiceClient()
+            project = os.environ.get("GOOGLE_CLOUD_PROJECT", "leadenrich-a2b9d")
+            name = f"projects/{project}/secrets/apify-api-token/versions/latest"
+            resp = client.access_secret_version(request={"name": name})
+            token = resp.payload.data.decode("UTF-8").strip()
+        except Exception:
+            pass
+    return token
+
+
+def _apify_run_actor(actor_id, input_data, timeout_secs=120):
+    """Run an Apify actor synchronously and return results."""
+    token = _get_apify_token()
+    if not token:
+        raise ValueError("APIFY_API_TOKEN not configured")
+
+    # Start actor run
+    resp = requests.post(
+        f"https://api.apify.com/v2/acts/{actor_id}/runs",
+        json=input_data,
+        params={"token": token, "waitForFinish": timeout_secs},
+        timeout=timeout_secs + 30,
+    )
+    if resp.status_code not in (200, 201):
+        raise ValueError(f"Apify actor start failed: {resp.status_code} {resp.text[:200]}")
+
+    run_data = resp.json().get("data", {})
+    run_id = run_data.get("id")
+    status = run_data.get("status")
+    dataset_id = run_data.get("defaultDatasetId")
+
+    # If not finished, poll
+    if status not in ("SUCCEEDED", "FAILED", "ABORTED"):
+        for _ in range(60):
+            time.sleep(2)
+            check = requests.get(
+                f"https://api.apify.com/v2/actor-runs/{run_id}",
+                params={"token": token}, timeout=15
+            ).json().get("data", {})
+            status = check.get("status")
+            dataset_id = check.get("defaultDatasetId", dataset_id)
+            if status in ("SUCCEEDED", "FAILED", "ABORTED"):
+                break
+
+    if status != "SUCCEEDED":
+        raise ValueError(f"Apify actor run {status}: {run_data.get('statusMessage', '')}")
+
+    # Get results from dataset
+    if dataset_id:
+        items_resp = requests.get(
+            f"https://api.apify.com/v2/datasets/{dataset_id}/items",
+            params={"token": token, "limit": 100}, timeout=30
+        )
+        if items_resp.status_code == 200:
+            return items_resp.json()
+
+    return []
+
+
+@app.route("/api/apify/actors")
+def api_apify_actors():
+    """List available Apify actors for enrichment."""
+    actors = []
+    for key, cfg in _APIFY_ACTORS.items():
+        actors.append({
+            "key": key,
+            "name": cfg["name"],
+            "actor_id": cfg["actor_id"],
+            "description": cfg["description"],
+            "cost_per_100": cfg["cost_per_100"],
+        })
+    has_token = bool(_get_apify_token())
+    return jsonify({"actors": actors, "configured": has_token})
+
+
+@app.route("/api/apify/run", methods=["POST"])
+def api_apify_run():
+    """Run an Apify actor with custom input.
+    Body: {"actor": "linkedin_company", "company": {"name": "AECOM", "website": "..."}}
+    """
+    data = request.get_json() or {}
+    actor_key = data.get("actor", "")
+    company = data.get("company", {})
+
+    if actor_key not in _APIFY_ACTORS:
+        return jsonify({"error": f"Unknown actor: {actor_key}",
+                        "available": list(_APIFY_ACTORS.keys())}), 400
+
+    actor_cfg = _APIFY_ACTORS[actor_key]
+    try:
+        input_data = actor_cfg["input_builder"](company)
+        results = _apify_run_actor(actor_cfg["actor_id"], input_data)
+        return jsonify({
+            "status": "success",
+            "actor": actor_key,
+            "items": results[:50] if isinstance(results, list) else results,
+            "count": len(results) if isinstance(results, list) else 0,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/apify/enrich-account/<account_id>", methods=["POST"])
+def api_apify_enrich_account(account_id):
+    """Enrich an account using Apify actors (website contact scraper + optional social).
+    Body: {"actors": ["website_contact", "linkedin_company"]}  (default: website_contact only)
+    """
+    data = request.get_json() or {}
+    actor_keys = data.get("actors", ["website_contact"])
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM accounts WHERE id=%s", (account_id,))
+        account = cur.fetchone()
+        if not account:
+            cur.close(); conn.close()
+            return jsonify({"error": "Account not found"}), 404
+        account = dict(account)
+
+        company = {
+            "name": account.get("account_name", ""),
+            "website": account.get("website", ""),
+            "linkedin_url": "",
+            "facebook_url": "",
+            "instagram_handle": "",
+        }
+
+        # Check custom_fields for social URLs
+        cf = account.get("custom_fields")
+        if cf:
+            if isinstance(cf, str):
+                cf = json.loads(cf)
+            company["linkedin_url"] = cf.get("LinkedIn", cf.get("linkedin", ""))
+            company["facebook_url"] = cf.get("Facebook", cf.get("facebook", ""))
+            company["instagram_handle"] = cf.get("Instagram", cf.get("instagram", ""))
+
+        results = {}
+        total_items = 0
+        for actor_key in actor_keys:
+            if actor_key not in _APIFY_ACTORS:
+                continue
+            try:
+                actor_cfg = _APIFY_ACTORS[actor_key]
+                input_data = actor_cfg["input_builder"](company)
+                # Skip if no valid input (no URL, no search term)
+                has_input = any(v for v in input_data.values()
+                                if isinstance(v, list) and v and v[0])
+                if not has_input:
+                    results[actor_key] = {"skipped": True, "reason": "No input data"}
+                    continue
+                items = _apify_run_actor(actor_cfg["actor_id"], input_data)
+                results[actor_key] = {
+                    "items": items[:20] if isinstance(items, list) else items,
+                    "count": len(items) if isinstance(items, list) else 0,
+                }
+                total_items += results[actor_key]["count"]
+            except Exception as e:
+                results[actor_key] = {"error": str(e)}
+
+        # Store enrichment data
+        acct_cols = [c["column_name"] for c in get_columns("accounts")]
+        if "apify_enrichment" not in acct_cols:
+            try:
+                cur.execute("ALTER TABLE accounts ADD COLUMN apify_enrichment JSONB")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
+        # Extract and merge useful data
+        extracted = {"enriched_at": datetime.now().isoformat(), "actors_run": actor_keys}
+        emails_found = []
+        phones_found = []
+        social_links = {}
+
+        for actor_key, res in results.items():
+            items = res.get("items", [])
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                # Extract emails
+                for email in item.get("emails", []):
+                    if email and email not in emails_found:
+                        emails_found.append(email)
+                # Extract phones
+                for phone in item.get("phones", item.get("phoneNumbers", [])):
+                    if phone and phone not in phones_found:
+                        phones_found.append(phone)
+                # Social links
+                for link in item.get("links", item.get("socialLinks", [])):
+                    if isinstance(link, str):
+                        if "linkedin.com" in link:
+                            social_links["linkedin"] = link
+                        elif "facebook.com" in link:
+                            social_links["facebook"] = link
+                        elif "instagram.com" in link:
+                            social_links["instagram"] = link
+                        elif "twitter.com" in link or "x.com" in link:
+                            social_links["twitter"] = link
+
+        extracted["emails"] = emails_found[:10]
+        extracted["phones"] = phones_found[:10]
+        extracted["social_links"] = social_links
+        extracted["raw_results"] = {k: {"count": v.get("count", 0)}
+                                     for k, v in results.items() if isinstance(v, dict)}
+
+        cur.execute("UPDATE accounts SET apify_enrichment=%s, sync_status='modified', updated_at=%s WHERE id=%s",
+                    (json.dumps(extracted), datetime.now(), account_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return jsonify({
+            "status": "enriched",
+            "account_id": account_id,
+            "actors_run": actor_keys,
+            "emails_found": emails_found,
+            "phones_found": phones_found,
+            "social_links": social_links,
+            "total_items": total_items,
+        })
+    except Exception as e:
+        try:
+            cur.close(); conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/apify/cost-estimate", methods=["POST"])
+def api_apify_cost_estimate():
+    """Estimate cost for enriching N companies.
+    Body: {"company_count": 100, "actors": ["website_contact", "linkedin_company"]}
+    """
+    data = request.get_json() or {}
+    count = data.get("company_count", 1)
+    actor_keys = data.get("actors", ["website_contact"])
+
+    total = 0
+    breakdown = {}
+    for key in actor_keys:
+        cfg = _APIFY_ACTORS.get(key)
+        if cfg:
+            cost = (cfg["cost_per_100"] / 100) * count
+            breakdown[key] = {"cost_usd": round(cost, 2), "name": cfg["name"]}
+            total += cost
+
+    return jsonify({
+        "company_count": count,
+        "total_cost_usd": round(total, 2),
+        "breakdown": breakdown,
+    })
+
+
+# ---------------------------------------------------------------------------
 # ROUTES - API: Zoho metadata
 # ---------------------------------------------------------------------------
 @app.route("/api/zoho/modules")

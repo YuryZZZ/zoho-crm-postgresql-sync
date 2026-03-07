@@ -379,6 +379,7 @@ textarea.form-input { min-height: 80px; resize: vertical; }
       <button class="btn btn-secondary" onclick="showCustomDedupForm()">Custom Dedup</button>
       <button class="btn btn-secondary" onclick="loadCrossModuleDuplicates()">Cross-Module</button>
       <button class="btn btn-secondary" onclick="showEnrichmentPanel()">Enrichment</button>
+      <button class="btn btn-secondary" onclick="showExternalEnrichPanel()">External Enrich</button>
       <button class="btn btn-secondary" onclick="loadRecentChanges()">Change Log</button>
     </div>
     <div id="enrichContent">
@@ -1803,6 +1804,251 @@ async function syncEnrichmentToCRM(tableName) {
     showEnrichmentPanel();
   } catch(e) {
     showToast(`Sync error: ${e.message}`, 'error');
+  }
+}
+
+// ============================================================
+// COMPANIES HOUSE & APIFY ENRICHMENT
+// ============================================================
+async function showExternalEnrichPanel() {
+  $('enrichContent').innerHTML = '<p style="color:var(--text3)">Loading external enrichment tools...</p>';
+  try {
+    const [chStatus, apifyActors] = await Promise.all([
+      api('/api/companies-house/search?q=test&limit=1').then(() => ({ok:true})).catch(e => ({ok:false, error:e.message})),
+      api('/api/apify/actors'),
+    ]);
+
+    let html = `<div class="section-box">
+      <h3>External Data Enrichment</h3>
+      <p style="color:var(--text3);font-size:12px;margin-bottom:16px">
+        Enrich your CRM data with external sources: UK Companies House (free), LinkedIn, Facebook, Instagram via Apify.
+      </p>
+
+      <!-- Companies House Search -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+        <h4 style="margin:0 0 8px 0">🏛️ Companies House (UK) <span class="badge" style="background:var(--green);color:#fff">FREE</span></h4>
+        <p style="color:var(--text3);font-size:12px;margin-bottom:8px">Search UK company register — get officers, shareholders, status, filings, registered address</p>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="chSearchInput" class="form-input" placeholder="Search company name..." style="flex:1" onkeydown="if(event.key==='Enter')searchCompaniesHouse()">
+          <button class="btn btn-primary" onclick="searchCompaniesHouse()">Search</button>
+        </div>
+        <div id="chSearchResults" style="margin-top:12px"></div>
+      </div>
+
+      <!-- Apify Social Media -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:16px">
+        <h4 style="margin:0 0 8px 0">📱 Social Media Enrichment (Apify) ${apifyActors.configured ? '<span class="badge" style="background:var(--green);color:#fff">Connected</span>' : '<span class="badge" style="background:var(--orange);color:#fff">No API Key</span>'}</h4>
+        <p style="color:var(--text3);font-size:12px;margin-bottom:8px">Extract data from LinkedIn, Facebook, Instagram, Google Maps via Apify actors</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">`;
+    (apifyActors.actors||[]).forEach(a => {
+      const icon = a.key.includes('linkedin') ? '💼' : a.key.includes('facebook') ? '📘' : a.key.includes('instagram') ? '📸' : a.key.includes('google') ? '📍' : '🌐';
+      html += `<div style="background:var(--bg3);padding:8px 12px;border-radius:6px;font-size:12px">
+        ${icon} <strong>${a.name}</strong><br><span style="color:var(--text3)">$${a.cost_per_100}/100 items</span>
+      </div>`;
+    });
+    html += `</div>
+
+        <!-- Enrich specific account -->
+        <h4 style="margin:12px 0 8px 0">Enrich Account</h4>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="enrichAccountSelect" class="form-select" style="width:250px">
+            <option value="">Loading accounts...</option>
+          </select>
+          <select id="enrichActorSelect" class="form-select" style="width:200px" multiple>`;
+    (apifyActors.actors||[]).forEach(a => {
+      const sel = a.key === 'website_contact' ? 'selected' : '';
+      html += `<option value="${a.key}" ${sel}>${a.name}</option>`;
+    });
+    html += `</select>
+          <button class="btn btn-primary" onclick="runApifyEnrichAccount()">Enrich</button>
+          <button class="btn btn-secondary" onclick="runChEnrichAccount()">🏛️ Companies House</button>
+        </div>
+        <div id="apifyEnrichResult" style="margin-top:12px"></div>
+
+        <!-- Cost estimator -->
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+          <h4 style="margin:0 0 8px">Cost Estimator</h4>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" id="costEstCount" value="100" class="form-input" style="width:100px" min="1">
+            <span style="color:var(--text2);font-size:13px">companies ×</span>
+            <button class="btn btn-secondary btn-sm" onclick="estimateApifyCost()">Estimate Cost</button>
+            <span id="costEstResult" style="font-weight:600;color:var(--green)"></span>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+    $('enrichContent').innerHTML = html;
+
+    // Load accounts dropdown
+    try {
+      const accData = await api('/api/query', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({sql: "SELECT id, account_name FROM accounts WHERE account_name IS NOT NULL ORDER BY account_name LIMIT 500"})
+      });
+      const sel = $('enrichAccountSelect');
+      sel.innerHTML = '<option value="">Select account...</option>';
+      (accData.rows||[]).forEach(r => {
+        sel.innerHTML += `<option value="${r.id}">${r.account_name}</option>`;
+      });
+    } catch(e) {}
+
+  } catch(e) {
+    $('enrichContent').innerHTML = `<div class="section-box" style="border-color:var(--red)"><p style="color:var(--red)">Error: ${e.message}</p></div>`;
+  }
+}
+
+async function searchCompaniesHouse() {
+  const q = $('chSearchInput').value.trim();
+  if (!q) { showToast('Enter a company name','warning'); return; }
+  $('chSearchResults').innerHTML = '<p style="color:var(--text3)">Searching Companies House...</p>';
+  try {
+    const data = await api(`/api/companies-house/search?q=${encodeURIComponent(q)}&limit=10`);
+    if (!data.companies || data.companies.length === 0) {
+      $('chSearchResults').innerHTML = '<p style="color:var(--text3)">No companies found</p>';
+      return;
+    }
+    let html = `<div class="data-table-wrap"><table><thead><tr><th>Company</th><th>Number</th><th>Status</th><th>Created</th><th>Address</th><th>Actions</th></tr></thead><tbody>`;
+    data.companies.forEach(c => {
+      const statusColor = c.company_status === 'active' ? 'var(--green)' : 'var(--red)';
+      html += `<tr>
+        <td style="font-weight:600">${c.title}</td>
+        <td><code>${c.company_number}</code></td>
+        <td><span style="color:${statusColor}">${c.company_status||'—'}</span></td>
+        <td style="font-size:12px">${c.date_of_creation||'—'}</td>
+        <td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${c.address||'—'}</td>
+        <td class="btn-group">
+          <button class="btn btn-xs btn-primary" onclick="viewChSnapshot('${c.company_number}')">Full Profile</button>
+          <button class="btn btn-xs btn-secondary" onclick="viewChOfficers('${c.company_number}')">Officers</button>
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    html += `<p style="color:var(--text3);font-size:11px;margin-top:4px">${data.total} total results</p>`;
+    $('chSearchResults').innerHTML = html;
+  } catch(e) {
+    $('chSearchResults').innerHTML = `<p style="color:var(--red)">Error: ${e.message}</p>`;
+  }
+}
+
+async function viewChSnapshot(companyNumber) {
+  $('chSearchResults').innerHTML += '<p style="color:var(--text3)">Loading full profile...</p>';
+  try {
+    const data = await api(`/api/companies-house/snapshot/${companyNumber}`);
+    const p = data.profile || {};
+    const addr = p.registered_office_address || {};
+    let html = `<div class="section-box" style="margin-top:12px">
+      <h3>${p.company_name || companyNumber}</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
+        <div><strong>Number:</strong> ${p.company_number||'—'}</div>
+        <div><strong>Status:</strong> <span style="color:${p.company_status==='active'?'var(--green)':'var(--red)'}">${p.company_status||'—'}</span></div>
+        <div><strong>Type:</strong> ${p.type||p.company_type||'—'}</div>
+        <div><strong>Incorporated:</strong> ${p.date_of_creation||'—'}</div>
+        <div><strong>SIC Codes:</strong> ${(p.sic_codes||[]).join(', ')||'—'}</div>
+        <div><strong>Address:</strong> ${[addr.address_line_1,addr.locality,addr.postal_code].filter(Boolean).join(', ')||'—'}</div>
+      </div>`;
+
+    // Officers
+    if (data.officers && data.officers.length > 0) {
+      html += '<h4 style="margin-top:12px">Officers</h4><div class="data-table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Appointed</th><th>Resigned</th></tr></thead><tbody>';
+      data.officers.forEach(o => {
+        const resigned = o.resigned_on ? `<span style="color:var(--red)">${o.resigned_on}</span>` : '<span style="color:var(--green)">Active</span>';
+        html += `<tr><td>${o.name||'—'}</td><td>${o.officer_role||'—'}</td><td>${o.appointed_on||'—'}</td><td>${resigned}</td></tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+
+    // PSCs
+    if (data.pscs && data.pscs.length > 0) {
+      html += '<h4 style="margin-top:12px">Persons with Significant Control</h4>';
+      data.pscs.forEach(psc => {
+        html += `<div style="background:var(--bg3);padding:8px;border-radius:6px;margin-bottom:4px;font-size:12px">
+          <strong>${psc.name||'—'}</strong> — ${(psc.natures_of_control||[]).join(', ')}
+        </div>`;
+      });
+    }
+
+    html += '</div>';
+    $('chSearchResults').innerHTML = html;
+  } catch(e) {
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function viewChOfficers(companyNumber) {
+  try {
+    const data = await api(`/api/companies-house/officers/${companyNumber}`);
+    let html = `<div class="section-box" style="margin-top:12px"><h3>Officers (${data.active} active / ${data.total} total)</h3>`;
+    html += '<div class="data-table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Appointed</th><th>Nationality</th><th>Status</th></tr></thead><tbody>';
+    (data.officers||[]).forEach(o => {
+      const status = o.resigned_on ? `<span style="color:var(--text3)">Resigned ${o.resigned_on}</span>` : '<span style="color:var(--green)">Active</span>';
+      html += `<tr><td style="font-weight:500">${o.name}</td><td>${o.officer_role}</td><td>${o.appointed_on||'—'}</td><td>${o.nationality||'—'}</td><td>${status}</td></tr>`;
+    });
+    html += '</tbody></table></div></div>';
+    $('chSearchResults').innerHTML = html;
+  } catch(e) {
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function runChEnrichAccount() {
+  const accountId = $('enrichAccountSelect').value;
+  if (!accountId) { showToast('Select an account first','warning'); return; }
+  $('apifyEnrichResult').innerHTML = '<p style="color:var(--text3)">Enriching via Companies House...</p>';
+  try {
+    const res = await api(`/api/companies-house/enrich-account/${accountId}`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+    });
+    if (res.status === 'no_match') {
+      $('apifyEnrichResult').innerHTML = `<p style="color:var(--orange)">No UK company match found</p>`;
+    } else {
+      $('apifyEnrichResult').innerHTML = `<div class="section-box" style="border-color:var(--green)">
+        <p style="color:var(--green);font-weight:600">Enriched! Matched "${res.matched_name}" (score: ${res.match_score})</p>
+        <p style="font-size:12px">Company #${res.company_number} — Status: ${res.data.company_status}, Officers: ${(res.data.officers||[]).length}</p>
+      </div>`;
+    }
+  } catch(e) {
+    $('apifyEnrichResult').innerHTML = `<p style="color:var(--red)">Error: ${e.message}</p>`;
+  }
+}
+
+async function runApifyEnrichAccount() {
+  const accountId = $('enrichAccountSelect').value;
+  if (!accountId) { showToast('Select an account first','warning'); return; }
+  const actors = [...$('enrichActorSelect').selectedOptions].map(o => o.value);
+  if (!actors.length) { showToast('Select at least one actor','warning'); return; }
+  $('apifyEnrichResult').innerHTML = `<p style="color:var(--text3)">Running ${actors.length} Apify actor(s)... this may take 1-2 minutes</p>`;
+  try {
+    const res = await api(`/api/apify/enrich-account/${accountId}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({actors})
+    });
+    let html = `<div class="section-box" style="border-color:var(--green)">
+      <p style="color:var(--green);font-weight:600">Enrichment complete! ${res.total_items} data items extracted</p>`;
+    if (res.emails_found.length) html += `<p style="font-size:12px">📧 Emails: ${res.emails_found.join(', ')}</p>`;
+    if (res.phones_found.length) html += `<p style="font-size:12px">📞 Phones: ${res.phones_found.join(', ')}</p>`;
+    if (Object.keys(res.social_links||{}).length) {
+      html += '<p style="font-size:12px">🔗 Social: ' + Object.entries(res.social_links).map(([k,v]) => `${k}: ${v}`).join(', ') + '</p>';
+    }
+    html += '</div>';
+    $('apifyEnrichResult').innerHTML = html;
+  } catch(e) {
+    $('apifyEnrichResult').innerHTML = `<p style="color:var(--red)">Error: ${e.message}</p>`;
+  }
+}
+
+async function estimateApifyCost() {
+  const count = parseInt($('costEstCount').value) || 100;
+  const actors = [...$('enrichActorSelect').selectedOptions].map(o => o.value);
+  if (!actors.length) actors.push('website_contact');
+  try {
+    const res = await api('/api/apify/cost-estimate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({company_count: count, actors})
+    });
+    $('costEstResult').textContent = `≈ $${res.total_cost_usd} USD`;
+  } catch(e) {
+    $('costEstResult').textContent = `Error: ${e.message}`;
   }
 }
 
