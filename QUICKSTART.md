@@ -1,4 +1,4 @@
-# Zoho CRM → PostgreSQL Digital Twin — Quick Start
+# Zoho CRM -> PostgreSQL Digital Twin -- Quick Start
 
 > **For LLMs and developers**: This is the complete reference for the Zoho CRM sync platform.
 
@@ -7,28 +7,33 @@
 A production **Flask web dashboard** deployed on **Google Cloud Run** that:
 1. **Syncs** 21 Zoho CRM modules (+ email tracking + visits) into a PostgreSQL database every 60 minutes
 2. **Provides a web UI** with 9 tabs: Dashboard, Data Browser, Create Record, Upload Data, Enrich & Deduplicate, SQL Query, Table Manager, Sync Control, AI Chat
-3. **Supports bidirectional sync** — push modified records back to Zoho CRM
-4. **AI-powered chat** — ask questions about your CRM data using Gemini 2.5 Pro with SQL function calling
+3. **Supports bidirectional sync** -- push modified records back to Zoho CRM
+4. **AI-powered chat** -- ask questions about your CRM data using Gemini 2.5 Pro with SQL function calling
+5. **External enrichment** -- Companies House (UK company data) + Apify (LinkedIn, Facebook, Instagram, Google Maps)
+6. **Smart deduplication** -- 12-stage company name normalizer, field-configurable dedup, enrichment tables with dedup-check + on-demand sync
 
 ## Architecture
 
 ```
-Zoho CRM (EU) ←→ Flask App (Cloud Run) ←→ PostgreSQL (Cloud SQL)
-                        ↓                         ↓
-                  Gemini 2.5 Pro          369,600+ records
-                  (AI Chat/SQL)           21 CRM modules
-                                          + email_tracking
-                                          + visits
+                              Companies House (UK)
+                                      |
+Zoho CRM (EU) <--> Flask App (Cloud Run) <--> PostgreSQL (Cloud SQL)
+                        |                           |
+                   Gemini 2.5 Pro            654,000+ records
+                   (AI Chat/SQL)             87 tables
+                        |
+                   Apify Platform
+                   (LinkedIn, FB, IG, Maps)
 ```
 
 ## Key Files
 
 | File | Description |
 |------|-------------|
-| `web_dashboard/unified_app.py` | **Main application** (~5100 lines) — all endpoints, sync engine, AI chat |
-| `web_dashboard/templates/unified_index.html` | **Single-page UI** — 9 tabs, all frontend |
+| `web_dashboard/unified_app.py` | **Main application** (~6900 lines, 74 endpoints) -- all routes, sync engine, AI chat, enrichment |
+| `web_dashboard/templates/unified_index.html` | **Single-page UI** (~2600 lines) -- 9 tabs, all frontend |
 | `web_dashboard/Dockerfile` | Container config (Python 3.11, gunicorn) |
-| `web_dashboard/cloudbuild.yaml` | CI/CD pipeline — build, push, deploy to Cloud Run |
+| `web_dashboard/cloudbuild.yaml` | CI/CD pipeline -- build, push, deploy to Cloud Run |
 | `web_dashboard/requirements.txt` | Python dependencies |
 | `module_config.py` | 21 Zoho CRM module definitions, table mappings, sync order |
 | `sql/zoho_crm_digital_twin_schema.sql` | Full PostgreSQL schema |
@@ -64,6 +69,8 @@ Zoho CRM (EU) ←→ Flask App (Cloud Run) ←→ PostgreSQL (Cloud SQL)
 | `zoho-client-id` | OAuth client ID |
 | `zoho-client-secret` | OAuth client secret |
 | `zoho-crm-refresh-token` | OAuth refresh token |
+| `companies-house-api-key` | UK Companies House API (free) |
+| `apify-api-token` | Apify social media enrichment |
 
 ## 21 Synced Modules
 
@@ -90,10 +97,10 @@ The `cloudbuild.yaml` does:
 - **Interval**: 60 minutes
 - **How**: Background thread with `fcntl` file lock (single-worker safe)
 - **Startup delay**: 60 seconds
-- **Cycle**: Pull all 21 modules incrementally → import emails (COQL) → import visits
+- **Cycle**: Pull all 21 modules incrementally -> import emails (COQL) -> import visits
 - **Lock timeout**: 30 minutes auto-reset for stale locks
 
-## API Endpoints (54 total)
+## API Endpoints (74 total)
 
 ### Core
 | Method | Endpoint | Description |
@@ -161,13 +168,43 @@ The `cloudbuild.yaml` does:
 |--------|----------|-------------|
 | GET | `/api/enrich/duplicates/<table>` | Find exact duplicates |
 | GET | `/api/enrich/fuzzy-duplicates/<table>` | Fuzzy duplicate detection (pg_trgm) |
-| GET | `/api/enrich/cross-module-duplicates` | Cross-module dedup (leads↔contacts↔accounts) |
+| GET | `/api/enrich/normalized-duplicates/<table>` | Smart dedup (12-stage normalizer) |
+| GET | `/api/enrich/cross-module-duplicates` | Cross-module dedup |
 | GET | `/api/enrich/completeness/<table>` | Field completeness analysis |
 | GET | `/api/enrich/validate/<table>` | Data validation |
 | GET | `/api/enrich/duplicates/<table>/detail` | Detailed duplicate groups |
 | POST | `/api/enrich/convert` | Convert lead to contact |
 | POST | `/api/enrich/merge` | Merge duplicate records |
 | POST | `/api/enrich/bulk-update` | Bulk update records |
+| POST | `/api/enrich/custom-dedup` | Custom field-configurable dedup |
+
+### Enrichment Tables
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/enrichment/tables` | List registered enrichment tables |
+| POST | `/api/enrichment/tables` | Register enrichment table |
+| GET | `/api/enrichment/summary/<table>` | Enrichment summary stats |
+| POST | `/api/enrichment/dedup-check` | Dedup check against CRM |
+| POST | `/api/enrichment/sync-to-crm` | Push unique records to CRM |
+
+### Companies House (UK)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/companies-house/search` | Search UK companies |
+| GET | `/api/companies-house/company/<num>` | Company profile |
+| GET | `/api/companies-house/officers/<num>` | Company officers |
+| GET | `/api/companies-house/psc/<num>` | Persons with significant control |
+| GET | `/api/companies-house/filing-history/<num>` | Filing history |
+| GET | `/api/companies-house/snapshot/<num>` | Full snapshot (profile+officers+PSC+charges) |
+| POST | `/api/companies-house/enrich-account/<id>` | Auto-enrich account |
+
+### Apify Social Media
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/apify/actors` | List available actors |
+| POST | `/api/apify/run` | Run actor with custom input |
+| POST | `/api/apify/enrich-account/<id>` | Enrich account with actors |
+| POST | `/api/apify/cost-estimate` | Estimate enrichment cost |
 
 ### Zoho API
 | Method | Endpoint | Description |
@@ -195,7 +232,7 @@ CREATE TABLE <module> (
     zoho_id VARCHAR(100) UNIQUE NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    sync_status VARCHAR(20) DEFAULT 'pending',  -- pending/synced/modified/conflict/error
+    sync_status VARCHAR(20) DEFAULT 'pending',
     sync_version INTEGER DEFAULT 1,
     last_sync_at TIMESTAMPTZ,
     -- Module-specific fields...
@@ -207,7 +244,7 @@ CREATE TABLE <module> (
 
 ### Sync Engine
 - **Incremental pull**: Uses `Modified_Time` from Zoho API, only fetches changed records
-- **Push to Zoho**: `pg_record_to_zoho()` maps DB fields → Zoho API fields, only standard mapped fields (not custom_fields blob)
+- **Push to Zoho**: `pg_record_to_zoho()` maps DB fields -> Zoho API fields, only standard mapped fields (not custom_fields blob)
 - **Conflict detection**: Compares local vs remote `modified_time` before push
 - **Email import**: COQL-based (`POST /crm/v2/coql`), cursor pagination on `Created_Time`/`Modified_Time`
 
@@ -217,11 +254,17 @@ CREATE TABLE <module> (
 - **Bulk INSERT**: `psycopg2.extras.execute_values()` with page_size=2000 (50-100x faster)
 - **New table creation**: Can create tables on-the-fly from CSV column detection
 
-### Fuzzy Deduplication
-- Uses `pg_trgm` extension with GIN indexes on `LOWER(TRIM(field))` expressions
-- Exact dedup: `GROUP BY` normalized name (instant at any scale)
-- Fuzzy dedup: LATERAL join with 500 samples × GIN index lookups (O(500 × index_scan), not O(N²))
-- Handles 122K contacts in ~20 seconds
+### Deduplication (3 modes)
+1. **Fuzzy dedup**: `pg_trgm` GIN indexes + LATERAL join (O(500 x index_scan), not O(N^2))
+2. **Smart dedup**: 12-stage company name normalizer (Unicode -> lowercase -> CRN removal -> punctuation -> legal suffix stripping -> stopwords -> canonical -> phonetic -> Jaccard)
+3. **Custom dedup**: Field-configurable, modes: exact/normalized/fuzzy, cross-table support
+
+### Enrichment Pipeline
+- **Enrichment tables**: External data uploaded, registered, NOT auto-synced to Zoho
+- **Dedup check**: Compare enrichment table against CRM module (exact/normalized/fuzzy)
+- **Push unique**: On-demand sync of non-duplicate records to CRM tables
+- **Companies House**: Auto-enrich accounts with UK company data (officers, PSC, status, SIC)
+- **Apify**: 6 actors for LinkedIn, Facebook, Instagram, Google Maps, website contact scraping
 
 ### AI Chat
 - **Model**: Gemini 2.5 Pro via Vertex AI (ADC authentication)
@@ -249,4 +292,6 @@ ZOHO_CLIENT_SECRET=(from Secret Manager)
 ZOHO_REFRESH_TOKEN=(from Secret Manager)
 AUTO_SYNC_ENABLED=true
 AUTO_SYNC_INTERVAL_MINUTES=60
+COMPANIES_HOUSE_API_KEY=(from Secret Manager, optional)
+APIFY_API_TOKEN=(from Secret Manager, optional)
 ```

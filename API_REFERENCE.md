@@ -1,6 +1,8 @@
-# API Reference — Zoho CRM Dashboard
+# API Reference -- Zoho CRM Dashboard
 
 Base URL: `https://zoho-crm-dashboard-30591337479.europe-west1.run.app`
+
+**Total endpoints: 74**
 
 ## Dashboard & Health
 
@@ -16,8 +18,8 @@ Dashboard stats: total records, module counts, Zoho connection status, sync stat
 **Response:**
 ```json
 {
-  "total_records": 369600,
-  "total_tables": 76,
+  "total_records": 654333,
+  "total_tables": 87,
   "zoho_connected": true,
   "auto_sync_enabled": true,
   "modules": [{"module": "Leads", "table": "leads", "count": 9194}, ...]
@@ -80,7 +82,7 @@ Preview which records would be pushed (count per module).
 Push only a specific module's modified records.
 
 ### `POST /api/sync/full`
-Full sync cycle: pull all → push modified.
+Full sync cycle: pull all -> push modified.
 
 ### `GET /api/sync/status`
 Current sync state: running/idle, last sync time, progress.
@@ -101,7 +103,7 @@ Sync operation history log.
 **Query:** `limit` (default 50)
 
 ### `POST /api/sync/import-emails`
-Full email tracking import via COQL (scans all Leads + Contacts — slow, ~2hrs for 131K records).
+Full email tracking import via COQL (scans all Leads + Contacts -- slow, ~2hrs for 131K records).
 
 ### `POST /api/sync/import-visits`
 Full visits import from Contacts related list.
@@ -148,7 +150,7 @@ Database statistics: total records, tables, sizes.
 ## Upload Data
 
 ### `POST /api/upload/preview`
-Preview CSV/Excel file — first 100 rows + detected columns.
+Preview CSV/Excel file -- first 100 rows + detected columns.
 **Body:** multipart/form-data with `file`
 **Response:** `{"columns": [...], "preview": [...], "total_rows": 10000}`
 
@@ -181,6 +183,11 @@ Fuzzy duplicate detection using pg_trgm trigram similarity.
 **Query:** `field` (email/phone/name), `threshold` (0.0-1.0, default 0.6), `page`, `per_page`
 **Technique:** GIN indexes on LOWER(TRIM(field)), LATERAL join with 500 sample values
 
+### `GET /api/enrich/normalized-duplicates/<table_name>`
+Smart dedup using 12-stage company name normalizer.
+Finds duplicates that fuzzy matching misses: "ABC Ltd." = "A.B.C. Limited" = "ABC GROUP LTD"
+**Query:** `page`, `per_page`
+
 ### `GET /api/enrich/cross-module-duplicates`
 Find duplicates across leads, contacts, accounts.
 **Query:** `field` (email/phone/name)
@@ -205,6 +212,202 @@ Merge duplicate records (keep primary, merge fields from secondary).
 ### `POST /api/enrich/bulk-update`
 Bulk update multiple records.
 **Body:** `{"table": "leads", "ids": [...], "updates": {"field": "value"}}`
+
+---
+
+## Custom Dedup
+
+### `POST /api/enrich/custom-dedup`
+Field-configurable deduplication with multiple modes.
+**Body:**
+```json
+{
+  "table": "accounts",
+  "fields": ["account_name", "website"],
+  "mode": "normalized",
+  "cross_table": "leads",
+  "cross_fields": ["company"],
+  "threshold": 0.6,
+  "limit": 500
+}
+```
+**Modes:** `exact` (GROUP BY normalized), `normalized` (12-stage normalizer), `fuzzy` (pg_trgm similarity)
+**Response:**
+```json
+{
+  "mode": "normalized",
+  "table": "accounts",
+  "fields": ["account_name"],
+  "total_groups": 45,
+  "total_duplicate_records": 120,
+  "groups": [{"normalized_key": "abc", "count": 3, "records": [...]}]
+}
+```
+
+---
+
+## Enrichment Tables
+
+### `GET /api/enrichment/tables`
+List all registered enrichment tables.
+**Response:** `{"tables": [...], "total": 3}`
+
+### `POST /api/enrichment/tables`
+Register a new enrichment table.
+**Body:** `{"table_name": "purchased_leads", "source": "Data vendor X", "target_module": "leads", "match_fields": ["email", "company"]}`
+
+### `GET /api/enrichment/summary/<table_name>`
+Get enrichment summary: total records, checked count, unique/duplicate/error counts.
+
+### `POST /api/enrichment/dedup-check`
+Run dedup check against CRM target module.
+**Body:** `{"table_name": "purchased_leads"}`
+**Response:** `{"checked": 500, "unique": 350, "duplicate": 150}`
+
+### `POST /api/enrichment/sync-to-crm`
+Push unique (non-duplicate) records to CRM table.
+**Body:** `{"table_name": "purchased_leads"}`
+**Response:** `{"pushed": 350, "skipped_duplicates": 150}`
+
+---
+
+## Companies House API (UK)
+
+All endpoints require `COMPANIES_HOUSE_API_KEY` configured in env or Secret Manager. Free API -- 600 calls/5 min rate limit.
+
+### `GET /api/companies-house/search`
+Search UK companies by name.
+**Query:** `q` (search term), `limit` (max results, default 20)
+**Response:**
+```json
+{
+  "companies": [
+    {
+      "company_number": "11099300",
+      "title": "RED SQUARE GROUP LTD",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2017-12-06",
+      "address": "4th Floor 18 St. Cross Street, London, EC1N 8UN",
+      "sic_codes": ["41202"]
+    }
+  ],
+  "total": 15
+}
+```
+
+### `GET /api/companies-house/company/<company_number>`
+Full company profile from Companies House.
+
+### `GET /api/companies-house/officers/<company_number>`
+List company officers (directors, secretaries).
+**Response:**
+```json
+{
+  "officers": [
+    {"name": "ZEMSKIKH, Yury", "officer_role": "director", "appointed_on": "2021-03-01", "nationality": "British"}
+  ],
+  "active": 1,
+  "total": 2
+}
+```
+
+### `GET /api/companies-house/psc/<company_number>`
+Persons with Significant Control (shareholders with 25%+ ownership).
+
+### `GET /api/companies-house/filing-history/<company_number>`
+Company filing history (annual accounts, confirmation statements, etc.).
+
+### `GET /api/companies-house/snapshot/<company_number>`
+Comprehensive snapshot: company profile + officers + PSC + charges + insolvency status in a single call.
+**Response:** `{"profile": {...}, "officers": [...], "pscs": [...], "charges": [...], "company_number": "11099300"}`
+
+### `POST /api/companies-house/enrich-account/<account_id>`
+Auto-enrich a CRM account by:
+1. Looking up account name in PostgreSQL
+2. Searching Companies House for matching company
+3. Matching via 12-stage company name normalizer
+4. Writing officers, address, status, SIC codes to `companies_house_data` JSONB column
+**Response:**
+```json
+{
+  "status": "enriched",
+  "matched_name": "RED SQUARE GROUP LTD",
+  "match_score": 95,
+  "company_number": "11099300",
+  "data": {"company_status": "active", "officers": [...], "sic_codes": ["41202"]}
+}
+```
+
+---
+
+## Apify Social Media Enrichment
+
+All endpoints require `APIFY_API_TOKEN` configured in env or Secret Manager.
+
+### Available Actors
+
+| Key | Actor ID | Cost/100 |
+|-----|----------|----------|
+| `linkedin_company` | anchor/linkedin-company-scraper | $3.00 |
+| `linkedin_people` | anchor/linkedin-people-scraper | $3.00 |
+| `instagram_scraper` | apify/instagram-scraper | $1.00 |
+| `facebook_pages` | apify/facebook-pages-scraper | $0.50 |
+| `website_contact` | apify/contact-information-scraper | $0.30 |
+| `google_maps` | apify/google-maps-scraper | $1.50 |
+
+### `GET /api/apify/actors`
+List available Apify actors and whether API token is configured.
+**Response:**
+```json
+{
+  "actors": [
+    {"key": "linkedin_company", "name": "LinkedIn Company Scraper", "actor_id": "anchor/linkedin-company-scraper", "cost_per_100": 3.0}
+  ],
+  "configured": true
+}
+```
+
+### `POST /api/apify/run`
+Run an Apify actor with custom input.
+**Body:**
+```json
+{
+  "actor_key": "website_contact",
+  "company": {"name": "Red Square Group", "website": "https://redsquaregroup.com"}
+}
+```
+**Response:** `{"items": [...], "count": 5}`
+
+### `POST /api/apify/enrich-account/<account_id>`
+Enrich a CRM account using selected Apify actors. Extracts emails, phones, social links and stores in `apify_enrichment` JSONB column.
+**Body:** `{"actors": ["website_contact", "linkedin_company"]}`
+**Response:**
+```json
+{
+  "status": "enriched",
+  "actors_run": ["website_contact", "linkedin_company"],
+  "emails_found": ["info@company.com"],
+  "phones_found": ["+44 20 1234 5678"],
+  "social_links": {"linkedin": "https://linkedin.com/company/example"},
+  "total_items": 8
+}
+```
+
+### `POST /api/apify/cost-estimate`
+Estimate cost for enriching N companies with selected actors.
+**Body:** `{"company_count": 500, "actors": ["website_contact", "linkedin_company"]}`
+**Response:**
+```json
+{
+  "company_count": 500,
+  "total_cost_usd": 16.5,
+  "breakdown": {
+    "website_contact": {"cost_usd": 1.5, "name": "Website Contact Scraper"},
+    "linkedin_company": {"cost_usd": 15.0, "name": "LinkedIn Company Scraper"}
+  }
+}
+```
 
 ---
 
@@ -236,10 +439,10 @@ Send a message to the AI assistant.
 **Response:** `{"response": "You have 9,194 leads...", "session_id": "default", "tools_used": ["execute_sql"]}`
 
 **Available AI tools:**
-- `execute_sql` — Run SELECT queries on the database
-- `list_tables` — List all database tables
-- `describe_table` — Get table schema and sample data
-- `create_table` — Create new tables
+- `execute_sql` -- Run SELECT queries on the database
+- `list_tables` -- List all database tables
+- `describe_table` -- Get table schema and sample data
+- `create_table` -- Create new tables
 
 ### `POST /api/chat/reset`
 Reset a chat session.

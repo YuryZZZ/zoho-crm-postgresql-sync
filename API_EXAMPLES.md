@@ -1,608 +1,407 @@
 # API Usage Examples
 
-> Complete examples for all API endpoints
+> Complete curl examples for all API endpoints
 
 ---
 
 ## Base URL
 
 ```
-https://zoho-crm-dashboard-699552818896.europe-west1.run.app
+https://zoho-crm-dashboard-30591337479.europe-west1.run.app
 ```
 
 ---
 
 ## Core API
 
-### 1. Get Database Statistics
+### 1. Dashboard Stats
 
 ```bash
-curl -X GET "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/stats"
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/dashboard" | python -m json.tool
 ```
 
-Response:
-```json
-{
-  "pending_total": 0,
-  "tables": [
-    {"table": "contacts", "count": 122742, "pending": 0},
-    {"table": "accounts", "count": 36898, "pending": 0},
-    {"table": "calls", "count": 65757, "pending": 0}
-  ],
-  "total_records": 506840,
-  "total_tables": 70
-}
-```
-
----
-
-### 2. Get Table Data
+### 2. Table Data (paginated, search, sort)
 
 ```bash
-# Basic request
-curl -X GET "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/table/contacts?page=1&per_page=10"
+# Basic
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/table/contacts?page=1&per_page=10"
 
 # With search
-curl -X GET "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/table/contacts?search=john&page=1&per_page=50"
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/table/contacts?search=john&per_page=50"
 
 # With sorting
-curl -X GET "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/table/contacts?sort=created_time:desc&page=1"
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/table/contacts?sort_by=created_at&sort_dir=desc"
+```
+
+### 3. SQL Query
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/query" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT account_name, COUNT(*) as cnt FROM accounts GROUP BY account_name HAVING COUNT(*) > 1 LIMIT 20"}'
+```
+
+### 4. Create Record
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/record/leads" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"first_name": "John", "last_name": "Doe", "email": "john@example.com", "company": "Acme Corp"}'
+```
+
+### 5. Update Record
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/record/leads/UUID_HERE" \
+  -X PUT -H "Content-Type: application/json" \
+  -d '{"email": "new@example.com"}'
+```
+
+### 6. Export Table as CSV
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/export/accounts" -o accounts.csv
+```
+
+---
+
+## Sync Control
+
+### 7. Pull All Modules from Zoho
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/sync/pull" -X POST -d '{}'
+```
+
+### 8. Push Modified Records to Zoho
+
+```bash
+# Preview what will be pushed
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/sync/push-preview" -X POST -d '{}'
+
+# Push all modified
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/sync/push" -X POST -d '{}'
+
+# Push single module
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/sync/push-module/Leads" -X POST -d '{}'
+```
+
+### 9. Sync Status & History
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/sync/status"
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/sync/history?limit=10"
+```
+
+### 10. Reset Stuck Sync
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/sync/reset" -X POST -d '{}'
+```
+
+---
+
+## Enrichment & Deduplication
+
+### 11. Fuzzy Duplicates
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrich/fuzzy-duplicates/accounts?field=name&threshold=0.6"
+```
+
+### 12. Smart Dedup (Normalized Company Names)
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrich/normalized-duplicates/accounts?per_page=20"
+```
+
+### 13. Custom Dedup (Field-Configurable)
+
+```bash
+# Exact dedup on email
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrich/custom-dedup" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"table": "contacts", "fields": ["email"], "mode": "exact"}'
+
+# Normalized dedup on company name
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrich/custom-dedup" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"table": "accounts", "fields": ["account_name"], "mode": "normalized"}'
+
+# Cross-module dedup
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrich/custom-dedup" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"table": "accounts", "fields": ["account_name"], "mode": "fuzzy", "cross_table": "leads", "cross_fields": ["company"], "threshold": 0.5}'
+```
+
+### 14. Cross-Module Duplicates
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrich/cross-module-duplicates?field=email"
+```
+
+### 15. Merge Duplicates
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrich/merge" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"primary_id": "uuid-keep", "secondary_ids": ["uuid-merge1", "uuid-merge2"], "table": "contacts"}'
+```
+
+---
+
+## Enrichment Tables
+
+### 16. Register Enrichment Table
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrichment/tables" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"table_name": "purchased_leads_q1", "source": "Data vendor X", "target_module": "leads", "match_fields": ["email", "company"]}'
+```
+
+### 17. List Enrichment Tables
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrichment/tables"
+```
+
+### 18. Dedup Check (against CRM)
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrichment/dedup-check" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"table_name": "purchased_leads_q1"}'
+```
+
+### 19. Push Unique Records to CRM
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrichment/sync-to-crm" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"table_name": "purchased_leads_q1"}'
+```
+
+### 20. Enrichment Summary
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/enrichment/summary/purchased_leads_q1"
+```
+
+---
+
+## Companies House API
+
+### 21. Search UK Companies
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/companies-house/search?q=red+square+group&limit=5"
 ```
 
 Response:
 ```json
 {
-  "columns": ["id", "zoho_id", "first_name", "last_name", "email", "phone"],
-  "data": [
-    {"id": 1, "zoho_id": "123456", "first_name": "John", "last_name": "Doe", "email": "john@example.com"}
+  "companies": [
+    {
+      "company_number": "11099300",
+      "title": "RED SQUARE GROUP LTD",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2017-12-06",
+      "address": "4th Floor 18 St. Cross Street, London, England, EC1N 8UN"
+    }
   ],
-  "page": 1,
-  "per_page": 10,
-  "total": 122742,
-  "total_pages": 12275
+  "total": 5
 }
 ```
 
----
-
-### 3. Get Sync Counts
+### 22. Company Profile
 
 ```bash
-curl -X GET "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/counts"
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/companies-house/company/11099300"
+```
+
+### 23. Company Officers
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/companies-house/officers/11099300"
+```
+
+### 24. Persons with Significant Control
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/companies-house/psc/11099300"
+```
+
+### 25. Full Company Snapshot
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/companies-house/snapshot/11099300"
+```
+
+### 26. Filing History
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/companies-house/filing-history/11099300"
+```
+
+### 27. Auto-Enrich CRM Account via Companies House
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/companies-house/enrich-account/ACCOUNT_UUID" \
+  -X POST -H "Content-Type: application/json" -d '{}'
 ```
 
 Response:
 ```json
 {
-  "total": 506840,
-  "synced": 505845,
-  "pending": 0,
-  "modified": 0,
-  "enriched": 0,
-  "new": 0,
-  "error": 0,
-  "unsynced": 0
-}
-```
-
----
-
-## Dynamic Tables API
-
-### 4. Create Custom Table
-
-```bash
-curl -X POST "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/tables/create" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "table_name": "company_enrichment_data",
-    "columns": [
-      {"name": "company_name", "type": "string", "nullable": false, "indexed": true},
-      {"name": "industry", "type": "string", "nullable": true},
-      {"name": "company_size", "type": "integer", "nullable": true},
-      {"name": "annual_revenue", "type": "decimal", "nullable": true},
-      {"name": "website", "type": "url", "nullable": true}
-    ],
-    "description": "External company data for enrichment",
-    "tags": ["enrichment", "companies", "external"]
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "table_name": "company_enrichment_data",
-  "display_name": "company_enrichment_data",
-  "columns_created": 5,
-  "message": "Table \"company_enrichment_data\" created successfully with 5 columns"
-}
-```
-
----
-
-### 5. List Custom Tables
-
-```bash
-curl -X GET "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/tables/custom"
-```
-
-Response:
-```json
-{
-  "tables": [
-    {
-      "table_name": "company_enrichment_data",
-      "display_name": "Company Enrichment Data",
-      "description": "External company data",
-      "record_count": 1000,
-      "column_count": 10,
-      "tags": ["enrichment"],
-      "created_at": "2026-02-23T10:00:00"
-    }
-  ]
-}
-```
-
----
-
-### 6. Get Table Schema
-
-```bash
-curl -X GET "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/tables/schema/contacts"
-```
-
-Response:
-```json
-{
-  "table_name": "contacts",
-  "columns": [
-    {"column_name": "id", "data_type": "integer", "is_nullable": "NO", "column_default": "nextval('contacts_id_seq'::regclass)"},
-    {"column_name": "zoho_id", "data_type": "character varying", "is_nullable": "YES"},
-    {"column_name": "first_name", "data_type": "text", "is_nullable": "YES"},
-    {"column_name": "last_name", "data_type": "text", "is_nullable": "YES"},
-    {"column_name": "email", "data_type": "text", "is_nullable": "YES"}
-  ]
-}
-```
-
----
-
-### 7. Create Relationship
-
-```bash
-curl -X POST "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/tables/relationships" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_table": "contacts",
-    "source_column": "account_name",
-    "target_table": "company_enrichment_data",
-    "target_column": "company_name",
-    "relationship_type": "one_to_many",
-    "description": "Link contacts to their company data"
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "relationship": {
-    "source": "contacts.account_name",
-    "target": "company_enrichment_data.company_name",
-    "type": "one_to_many"
-  },
-  "message": "Relationship created: contacts.account_name -> company_enrichment_data.company_name"
-}
-```
-
----
-
-### 8. Enrich Data from Table
-
-```bash
-curl -X POST "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/tables/enrich" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_table": "contacts",
-    "enrichment_table": "company_enrichment_data",
-    "match_columns": {
-      "account_name": "company_name"
-    },
-    "enrich_columns": {
-      "industry": "industry",
-      "company_size": "company_size"
-    },
-    "confidence_threshold": 80.0
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "results": {
-    "matched": 5000,
-    "enriched": 4800,
-    "errors": []
-  },
-  "message": "Enriched 4800 records from company_enrichment_data"
-}
-```
-
----
-
-## Staging Workflow API
-
-### 9. Create Staging Table
-
-```bash
-curl -X POST "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/staging/create" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "module": "contacts",
-    "custom_fields": [
-      {"name": "enriched_industry", "type": "TEXT"},
-      {"name": "data_quality_score", "type": "INTEGER"}
-    ]
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "staging_table": "staging_contacts_20240223103000",
-  "source_table": "contacts",
-  "records_copied": 122742,
-  "message": "Created staging table staging_contacts_20240223103000 with 122742 records"
-}
-```
-
----
-
-### 10. Get Staging Statistics
-
-```bash
-# All staging tables
-curl -X GET "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/staging/stats"
-
-# Specific table
-curl -X GET "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/staging/stats?table=staging_contacts_20240223103000"
-```
-
-Response:
-```json
-{
-  "success": true,
-  "staging_tables": {
-    "staging_contacts_20240223103000": {
-      "draft": 100,
-      "pending_validation": 50,
-      "validated": 200,
-      "approved": 25
-    }
+  "status": "enriched",
+  "matched_name": "RED SQUARE GROUP LTD",
+  "match_score": 95,
+  "company_number": "11099300",
+  "data": {
+    "company_status": "active",
+    "sic_codes": ["41202"],
+    "officers": [{"name": "ZEMSKIKH, Yury", "officer_role": "director"}]
   }
 }
 ```
 
 ---
 
-### 11. Validate Records
+## Apify Social Media
+
+### 28. List Available Actors
 
 ```bash
-curl -X POST "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/staging/validate" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "staging_table": "staging_contacts_20240223103000",
-    "record_ids": [1, 2, 3, 4, 5]
-  }'
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/apify/actors"
+```
+
+### 29. Run Actor
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/apify/run" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"actor_key": "website_contact", "company": {"name": "Red Square Group", "website": "https://redsquaregroup.com"}}'
+```
+
+### 30. Enrich Account with Multiple Actors
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/apify/enrich-account/ACCOUNT_UUID" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"actors": ["website_contact", "linkedin_company", "instagram_scraper"]}'
 ```
 
 Response:
 ```json
 {
-  "results": [
-    {
-      "success": true,
-      "valid": true,
-      "errors": [],
-      "status": "validated"
-    },
-    {
-      "success": true,
-      "valid": false,
-      "errors": [
-        {"field": "email", "error": "Invalid email format"}
-      ],
-      "status": "pending_validation"
-    }
-  ]
+  "status": "enriched",
+  "actors_run": ["website_contact", "linkedin_company", "instagram_scraper"],
+  "emails_found": ["info@company.com", "sales@company.com"],
+  "phones_found": ["+44 20 1234 5678"],
+  "social_links": {"linkedin": "https://linkedin.com/company/example"},
+  "total_items": 12
 }
 ```
 
----
-
-### 12. Approve for Sync
+### 31. Cost Estimate
 
 ```bash
-curl -X POST "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/staging/approve" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "staging_table": "staging_contacts_20240223103000",
-    "record_ids": [1, 3, 5],
-    "approved_by": "admin@company.com"
-  }'
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/apify/cost-estimate" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"company_count": 500, "actors": ["website_contact", "linkedin_company", "instagram_scraper", "facebook_pages", "google_maps"]}'
 ```
 
 Response:
 ```json
 {
-  "success": true,
-  "approved_count": 3,
-  "message": "3 records approved for sync"
-}
-```
-
----
-
-## AI Chat API
-
-### 13. Chat with AI
-
-```bash
-curl -X POST "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/chat" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "How many contacts dont have email addresses?",
-    "current_table": "contacts",
-    "history": []
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "message": "I found 1,234 contacts without email addresses. Here's the SQL query to find them:\n\n```sql\nSELECT COUNT(*) FROM contacts WHERE email IS NULL OR email = '';\n```",
-  "intent": "data_analysis"
-}
-```
-
----
-
-### 14. Generate SQL
-
-```bash
-curl -X POST "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/chat/sql" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "description": "Find duplicate contacts by email address",
-    "table": "contacts"
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "sql": "SELECT email, COUNT(*) as count FROM contacts WHERE email IS NOT NULL AND email != '' GROUP BY email HAVING COUNT(*) > 1"
-}
-```
-
----
-
-### 15. Analyze Data
-
-```bash
-curl -X POST "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/chat/analyze" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "table": "accounts",
-    "question": "What industries have the most accounts?"
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "analysis": "Based on the analysis of 36,898 accounts:\n\nTop Industries:\n1. Construction - 12,456 (33.7%)\n2. Real Estate - 8,234 (22.3%)\n3. Manufacturing - 5,678 (15.4%)\n\nRecommendations:\n- Focus enrichment efforts on Construction industry\n- 45% of Manufacturing accounts are missing industry data",
-  "table": "accounts"
-}
-```
-
----
-
-### 16. Get Enrichment Suggestion
-
-```bash
-curl -X POST "https://zoho-crm-dashboard-699552818896.europe-west1.run.app/api/chat/suggest-enrichment" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_table": "contacts",
-    "goal": "Add company size and industry data to contacts"
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "suggestion": "Recommended enrichment strategy:\n\n1. Create custom table:\n```sql\nCREATE TABLE company_data (\n  company_name VARCHAR(255),\n  industry VARCHAR(100),\n  company_size INTEGER\n);\n```\n\n2. Upload company data via Excel\n\n3. Create relationship:\n   contacts.account_name → company_data.company_name\n\n4. Enrich contacts with industry and company_size",
-  "source_table": "contacts"
-}
-```
-
----
-
-## JavaScript Usage Examples
-
-### Fetch Table Data
-
-```javascript
-async function loadContacts() {
-  const response = await fetch('/api/table/contacts?page=1&per_page=50');
-  const data = await response.json();
-  
-  console.log(`Total: ${data.total} records`);
-  console.log(`Columns: ${data.columns.join(', ')}`);
-  
-  data.data.forEach(record => {
-    console.log(`${record.first_name} ${record.last_name} - ${record.email}`);
-  });
-}
-```
-
----
-
-### Create Custom Table
-
-```javascript
-async function createEnrichmentTable() {
-  const response = await fetch('/api/tables/create', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      table_name: 'company_data',
-      columns: [
-        {name: 'company_name', type: 'string', nullable: false, indexed: true},
-        {name: 'industry', type: 'string'},
-        {name: 'revenue', type: 'decimal'}
-      ],
-      description: 'Company enrichment data',
-      tags: ['enrichment']
-    })
-  });
-  
-  const result = await response.json();
-  if (result.success) {
-    console.log('Table created:', result.table_name);
+  "company_count": 500,
+  "total_cost_usd": 31.5,
+  "breakdown": {
+    "website_contact": {"cost_usd": 1.5, "name": "Website Contact Scraper"},
+    "linkedin_company": {"cost_usd": 15.0, "name": "LinkedIn Company Scraper"},
+    "instagram_scraper": {"cost_usd": 5.0, "name": "Instagram Scraper"},
+    "facebook_pages": {"cost_usd": 2.5, "name": "Facebook Pages Scraper"},
+    "google_maps": {"cost_usd": 7.5, "name": "Google Maps Scraper"}
   }
 }
 ```
 
 ---
 
-### Use AI Chat
+## AI Chat
 
-```javascript
-async function askAI(question) {
-  const response = await fetch('/api/chat', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      message: question,
-      current_table: 'contacts'
-    })
-  });
-  
-  const result = await response.json();
-  if (result.success) {
-    displayMessage(result.message);
-  }
-}
+### 32. Chat with Gemini
 
-// Usage
-askAI("How many contacts don't have emails?");
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/chat" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"message": "How many contacts dont have email addresses?", "session_id": "default"}'
+```
+
+### 33. Reset Chat
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/chat/reset" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"session_id": "default"}'
+```
+
+### 34. Check AI Status
+
+```bash
+curl -s "https://zoho-crm-dashboard-30591337479.europe-west1.run.app/api/chat/status"
 ```
 
 ---
 
-## Python Usage Examples
-
-### Using requests library
+## Python Usage
 
 ```python
 import requests
 
-BASE_URL = "https://zoho-crm-dashboard-699552818896.europe-west1.run.app"
+BASE = "https://zoho-crm-dashboard-30591337479.europe-west1.run.app"
 
-# Get table data
-def get_table_data(table_name, page=1, per_page=50):
-    response = requests.get(
-        f"{BASE_URL}/api/table/{table_name}",
-        params={"page": page, "per_page": per_page}
-    )
-    return response.json()
+# Search UK company
+ch = requests.get(f"{BASE}/api/companies-house/search", params={"q": "Acme Corp", "limit": 5}).json()
+print(f"Found {ch['total']} companies")
 
-# Create custom table
-def create_custom_table(name, columns):
-    response = requests.post(
-        f"{BASE_URL}/api/tables/create",
-        json={
-            "table_name": name,
-            "columns": columns,
-            "description": f"Custom table: {name}"
-        }
-    )
-    return response.json()
+# Cost estimate for enrichment
+cost = requests.post(f"{BASE}/api/apify/cost-estimate", json={
+    "company_count": 100,
+    "actors": ["website_contact", "linkedin_company"]
+}).json()
+print(f"Cost for 100 companies: ${cost['total_cost_usd']}")
 
-# Chat with AI
-def chat_with_ai(message, current_table=None):
-    response = requests.post(
-        f"{BASE_URL}/api/chat",
-        json={
-            "message": message,
-            "current_table": current_table
-        }
-    )
-    return response.json()
+# Custom dedup
+dupes = requests.post(f"{BASE}/api/enrich/custom-dedup", json={
+    "table": "accounts",
+    "fields": ["account_name"],
+    "mode": "normalized"
+}).json()
+print(f"Found {dupes['total_groups']} duplicate groups")
 
-# Usage
-contacts = get_table_data("contacts", page=1, per_page=10)
-print(f"Found {contacts['total']} contacts")
-
-result = chat_with_ai("Analyze contacts by industry", "contacts")
-print(result["message"])
+# SQL query
+data = requests.post(f"{BASE}/api/query", json={
+    "sql": "SELECT COUNT(*) as total FROM accounts WHERE website IS NOT NULL"
+}).json()
+print(f"Accounts with website: {data['data'][0]['total']}")
 ```
 
 ---
 
 ## Error Handling
 
-### Common Error Responses
+All endpoints return JSON errors with HTTP status codes:
 
-**400 Bad Request**
 ```json
-{
-  "error": "Table name is required"
-}
-```
-
-**500 Server Error**
-```json
-{
-  "success": false,
-  "error": "Database connection failed"
-}
-```
-
-### Error Handling in JavaScript
-
-```javascript
-async function safeApiCall() {
-  try {
-    const response = await fetch('/api/tables/create', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({})  // Missing required field
-    });
-    
-    if (!response.ok) {
-      const error = await response.json();
-      console.error('API Error:', error.error);
-      return null;
-    }
-    
-    return await response.json();
-  } catch (error) {
-    console.error('Network Error:', error);
-    return null;
-  }
-}
+{"error": "Table name is required"}           // 400
+{"error": "Record not found"}                  // 404
+{"error": "COMPANIES_HOUSE_API_KEY not configured"}  // 500
+{"error": "Apify API error: Invalid token"}    // 500
 ```
 
 ---
 
-**End of API Examples**
+**End of API Examples** | **74 endpoints** | **Last updated: 2026-03-07**
